@@ -2,6 +2,9 @@
 
 COded Laue Diffraction imaging (COLD)
 
+[![Build Status](https://dev.azure.com/tomopy/COLD/_apis/build/status/dgursoy.cold?branchName=main)](https://dev.azure.com/tomopy/COLD/_build/latest?definitionId=5&branchName=main)
+
+
 ## Installation
 
 | Distribution   | Where to get it                                            |
