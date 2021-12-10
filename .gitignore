@@ -9,6 +9,9 @@ __pycache__/
 #  Config files
 /configs/*.yml
 
+# Mac stuff
+.DS_Store
+
 # Distribution / packaging
 .Python
 build/

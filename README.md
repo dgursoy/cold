@@ -14,11 +14,12 @@ COded Laue Diffraction imaging (COLD)
 ## Dependencies
 
 - numpy
-- scipy
 - cv2
-- matplotlib
-- h5py
 - yaml
+- h5py (lazy)
+- scipy (lazy)
+- dxchange (lazy)
+- matplotlib (lazy)
 
 ## Example
 

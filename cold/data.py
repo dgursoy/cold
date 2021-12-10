@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
-import matplotlib.pyplot as plt
 import numpy as np
-import h5py
 import re
 import os
 import yaml
@@ -79,6 +77,7 @@ def initdata(files, key):
 
 
 def loadh5(file, key):
+    import h5py
     f = h5py.File(file, 'r')
     value = f[key].value
     f.close()
@@ -177,6 +176,7 @@ def saveimg(path, vals, inds, shape, swap=False):
 
 
 def saveplt(path, vals, grid):
+    import matplotlib.pyplot as plt
     p = Path(path).parents[0]
     if not os.path.exists(p):
         os.makedirs(p)

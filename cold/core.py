@@ -4,10 +4,7 @@ import numpy as np
 import ctypes
 import cv2
 import logging
-from scipy import ndimage
 from cold import recpos, recsig, rectau, tukey, convolve, pack, saveplt
-import matplotlib.pyplot as plt
-from scipy import ndimage
 import multiprocessing
 import os
 
@@ -114,6 +111,8 @@ def plotresults(dat, ind, msk, grd, pos, sig, tau, geo, algo):
 
 
 def plotlsqr(dat, ind, msk, pos, sig, tau, ratio, id):
+    import matplotlib.pyplot as plt 
+    from scipy import ndimage   
     kernel = tukey(int(sig * ratio), tau)
     _msk = np.abs(msk - 1)
     _msk = convolve(_msk, kernel)
@@ -143,6 +142,8 @@ def plotlsqr(dat, ind, msk, pos, sig, tau, ratio, id):
 
 
 def plotmaxl(dat, ind, msk, pos, sig, tau, ratio, id):
+    import matplotlib.pyplot as plt
+    from scipy import ndimage   
     kernel = tukey(int(sig * ratio), tau)
     _msk = np.abs(msk - 1)
     _msk = convolve(_msk, kernel)

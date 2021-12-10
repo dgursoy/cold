@@ -2,7 +2,6 @@
 
 import numpy as np
 from cold import tukey, convolve
-import matplotlib.pyplot as plt
 import logging
 
 
@@ -36,6 +35,7 @@ def masklength(mask):
 
 def plotmask(mask, grid):
     """Plots the mask on a given grid."""
+    import matplotlib.pyplot as plt
     plt.figure(figsize=(16, 1.5))
     plt.xlabel("Length [mu]")
     plt.ylabel("Mask")
