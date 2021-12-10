@@ -1,0 +1,9 @@
+dxchange
+fire
+h5py
+matplotlib
+numpy
+opencv_python
+PyYAML
+scipy
+setuptools
