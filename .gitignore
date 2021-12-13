@@ -12,6 +12,11 @@ __pycache__/
 # Mac stuff
 .DS_Store
 
+# Testing scripts
+test.*
+trunk/
+tmp/
+
 # Distribution / packaging
 .Python
 build/
