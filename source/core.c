@@ -3,63 +3,9 @@
 
 
 void
-gauss(int siz, float mu, float sigma, float* signal)
-{
-    float sum = 0;
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] = 1 / (sigma * sqrtf(2 * PI)) * 
-            expf(-powf(x - mu - siz / 2, 2) / powf(2 * sigma, 2));
-        sum += signal[x];
-    }
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] /= sum;
-    }
-}
-
-
-void
-lorentz(int siz, float mu, float sigma, float* signal)
-{
-    float sum = 0;
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] = 1 / PI * sigma / (powf(x - mu - siz / 2, 2) + powf(sigma, 2));
-        sum += signal[x];
-    }
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] /= sum;
-    }
-}
-
-
-void
-pseudovoigt(int siz, float mu, float sigma, float alpha, float* signal)
-{
-    float sum = 0;
-    float* gau = (float*) calloc(siz, sizeof(float));
-    float* lor = (float*) calloc(siz, sizeof(float));
-    gauss(siz, mu, sigma, gau);
-    lorentz(siz, mu, sigma, lor);
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] = (1 - alpha) * gau[x] + alpha * lor[x];
-        sum += signal[x];
-    }
-    for (int x = 0; x < siz; x++)
-    {   
-        signal[x] /= sum;
-    }
-}
-
-
-void
-tukey(int siz, float tau, float* signal)
+footprint(int siz, float tau, float dec, float* signal)
 {
     siz--;
-    float sum = 0;
     int threshold = tau * siz / 2;
     int x;
     for (x = 0; x < siz; x++)
@@ -76,6 +22,13 @@ tukey(int siz, float tau, float* signal)
         {
             signal[x] = 0.5 - 0.5 * cosf(2 * PI * (siz - x) / (tau * siz));
         }
+    }
+    float sum = 0;
+    float thickness = 1;
+    for (int x = 0; x < siz; x++)
+    {   
+        signal[x] /= expf(-siz + thickness * dec * dec);
+        thickness++;
         sum += signal[x];
     }
     for (int x = 0; x < siz; x++)
@@ -182,7 +135,7 @@ int
 recposlsqr(
     float* data, int dx, 
     float* mask, int mx, 
-    int cor, int pos, int sig, float tau)
+    int cor, int pos, int sig, float tau, float dec)
 {
     float cost;
     float minimum;
@@ -198,8 +151,7 @@ recposlsqr(
 
     copyarr(data, dx, _data);
     normalize(_data, dx);
-
-    tukey(totsiz, tau, kernel);
+    footprint(totsiz, tau, dec, kernel);
     convolve(mask, mx, kernel, totsiz, _mask);
     minval = _mask[0];
     maxval = _mask[0];
@@ -233,7 +185,7 @@ int
 recsiglsqr(
     float* data, int dx, 
     float* mask, int mx,
-    int cor, int pos, int sig, float tau)
+    int cor, int pos, int sig, float tau, float dec)
 {
     float cost;
     float minimum;
@@ -255,7 +207,7 @@ recsiglsqr(
     {   
         int totsiz = k + cor;
         kernel = (float*) calloc(totsiz, sizeof(float));
-        tukey(totsiz, tau, kernel);
+        footprint(totsiz, tau, dec, kernel);
         _mask = (float*) calloc(mx, sizeof(float));
         convolve(mask, mx, kernel, totsiz, _mask);
         minval = _mask[0];
@@ -285,13 +237,16 @@ float
 rectaulsqr(
     float* data, int dx, 
     float* mask, int mx,
-    int cor, int pos, int sig, float tau)
+    int cor, int pos, int sig, float tau, float dec)
 {
     float cost;
     float minimum;
     float temp;
     float minval;
     float maxval;
+    float low = MAX(tau - 0.1, 0);
+    float high = MIN(tau + 0.1, 1);
+    float _tau;
     int k, l;
     float* kernel;
     float* _mask;
@@ -301,10 +256,15 @@ rectaulsqr(
     normalize(_data, dx);
 
     minimum = 1e+32f;
-    for (k = 0; k < 11; k++) // costsize
+    for (k = 0; k < 20; k++) // costsize
     {   
+        _tau = low + k * 0.01;
+        if (_tau > high)
+        {
+            _tau = high;
+        }
         kernel = (float*) calloc(sig, sizeof(float));
-        tukey(sig, k * 0.1, kernel);
+        footprint(sig, _tau, dec, kernel);
         _mask = (float*) calloc(mx, sizeof(float));
         convolve(mask, mx, kernel, sig, _mask);
         minval = _mask[0];
@@ -320,11 +280,63 @@ rectaulsqr(
         if (cost < minimum) 
         {
             minimum = cost;
-            tau = k * 0.1;
+            tau = _tau;
         }
         free (_mask);
         free (kernel);
     }
     free (_data);
     return tau;
+}
+
+
+float
+recdeclsqr(
+    float* data, int dx, 
+    float* mask, int mx,
+    int cor, int pos, int sig, float tau, float dec)
+{
+    float cost;
+    float minimum;
+    float temp;
+    float minval;
+    float maxval;
+    float low = MAX(dec - 0.1, 0);
+    float _dec;
+    int k, l;
+    float* kernel;
+    float* _mask;
+    float* _data = (float*) calloc(dx, sizeof(float));
+
+    copyarr(data, dx, _data);
+    normalize(_data, dx);
+
+    minimum = 1e+32f;
+    for (k = 0; k < 20; k++) // costsize
+    {   
+        _dec = low + k * 0.01;
+        kernel = (float*) calloc(sig, sizeof(float));
+        footprint(sig, tau, _dec, kernel);
+        _mask = (float*) calloc(mx, sizeof(float));
+        convolve(mask, mx, kernel, sig, _mask);
+        minval = _mask[0];
+        maxval = _mask[0];
+        minmaxarr(_mask, mx, &minval, &maxval);
+
+        cost = 0.0f;
+        for (l = 0; l < dx; l++)
+        {   
+            temp = (_mask[pos + l] - minval) / (maxval - minval);
+            cost += powf(_data[l] - temp, 2);
+        }
+        if (cost < minimum) 
+        {
+            minimum = cost;
+            dec = _dec;
+        }
+        free (_mask);
+        free (kernel);
+    }
+    free (_data);
+    return dec;
 }

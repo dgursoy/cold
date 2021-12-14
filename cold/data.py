@@ -193,3 +193,4 @@ def saveplt(path, vals, grid):
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
+    logging.info("Saved: " + str(path) + ".png")

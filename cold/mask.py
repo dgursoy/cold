@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import numpy as np
-from cold import tukey, convolve
+from cold import footprint, convolve
 import logging
 
 
@@ -74,7 +74,7 @@ def gridvals(mask, grid):
 
 def widen(mask, vals):
     size = int(mask['widening'] / mask['resolution'])
-    kernel = tukey(size, 0.0)
+    kernel = footprint(size, 0.0, 0.0)
     vals = convolve(vals, kernel)
     vals[vals > 0] = 1
     logging.info("Mask widened.")
@@ -83,7 +83,7 @@ def widen(mask, vals):
 
 def smooth(mask, vals):
     size = int(mask['smoothness'] / mask['resolution'])
-    kernel = tukey(size, 1.0)
+    kernel = footprint(size, 1.0, 0.0)
     vals = convolve(vals, kernel)
     logging.info("Mask smoothed.")
     return vals

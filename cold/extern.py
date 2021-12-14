@@ -14,7 +14,7 @@ LIBCOLD = ctypes.cdll.LoadLibrary(
 
 
 
-def recpos(data, mask, pos, sig, tau, method):
+def recpos(data, mask, pos, sig, tau, dec, method):
     """Returns the mask position for a single pixel."""
     if method == 'lsqr':
         LIBCOLD.recposlsqr.restype = ctypes.c_int
@@ -26,13 +26,14 @@ def recpos(data, mask, pos, sig, tau, method):
             as_c_int(0), 
             as_c_int(pos), 
             as_c_int(sig), 
-            as_c_float(tau))
+            as_c_float(tau), 
+            as_c_float(dec))
     elif method == 'maxl':
         pass
     return pos
 
 
-def recsig(data, mask, pos, sig, tau, method):
+def recsig(data, mask, pos, sig, tau, dec, method):
     """Returns the signal footprint size for a single pixel."""
     if method == 'lsqr':
         LIBCOLD.recsiglsqr.restype = ctypes.c_int
@@ -44,13 +45,14 @@ def recsig(data, mask, pos, sig, tau, method):
             as_c_int(0), 
             as_c_int(pos), 
             as_c_int(sig), 
-            as_c_float(tau))
+            as_c_float(tau), 
+            as_c_float(dec))
     elif method == 'maxl':
         pass
     return sig
 
 
-def rectau(data, mask, pos, sig, tau, method):
+def rectau(data, mask, pos, sig, tau, dec, method):
     """Returns the signal footprint size for a single pixel."""
     if method == 'lsqr':
         LIBCOLD.rectaulsqr.restype = ctypes.c_float
@@ -62,56 +64,40 @@ def rectau(data, mask, pos, sig, tau, method):
             as_c_int(0), 
             as_c_int(pos), 
             as_c_int(sig), 
-            as_c_float(tau))
+            as_c_float(tau), 
+            as_c_float(dec))
     elif method == 'maxl':
         pass
     return tau
 
 
-def gauss(n, mu, sigma):
-    """Returns a Gauss function."""
+def recdec(data, mask, pos, sig, tau, dec, method):
+    """Returns the signal footprint size for a single pixel."""
+    if method == 'lsqr':
+        LIBCOLD.recdeclsqr.restype = ctypes.c_float
+        tau = LIBCOLD.recdeclsqr(
+            as_c_float_p(data),
+            as_c_int(data.size),
+            as_c_float_p(mask),
+            as_c_int(mask.size),
+            as_c_int(0), 
+            as_c_int(pos), 
+            as_c_int(sig), 
+            as_c_float(tau), 
+            as_c_float(dec))
+    elif method == 'maxl':
+        pass
+    return tau
+
+
+def footprint(n, alpha, decay):
+    """Returns a footprint."""
     sig = np.zeros((n, ), dtype='float32')
-    LIBCOLD.gauss.restype = as_c_void_p()
-    LIBCOLD.gauss(
-        as_c_int(n),
-        as_c_float(mu),
-        as_c_float(sigma), 
-        as_c_float_p(sig))
-    return sig
-
-
-def lorentz(n, mu, sigma):
-    """Returns a Lorentz function."""
-    sig = np.zeros((n, ), dtype='float32')
-    LIBCOLD.lorentz.restype = as_c_void_p()
-    LIBCOLD.lorentz(
-        as_c_int(n),
-        as_c_float(mu),
-        as_c_float(sigma), 
-        as_c_float_p(sig))
-    return sig
-
-
-def pseudovoigt(n, mu, sigma, alpha):
-    """Returns a pseudovoigt function."""
-    sig = np.zeros((n, ), dtype='float32')
-    LIBCOLD.pseudovoigt.restype = as_c_void_p()
-    LIBCOLD.pseudovoigt(
-        as_c_int(n),
-        as_c_float(mu),
-        as_c_float(sigma), 
-        as_c_float(alpha), 
-        as_c_float_p(sig))
-    return sig
-
-
-def tukey(n, alpha):
-    """Returns a Tukey function."""
-    sig = np.zeros((n, ), dtype='float32')
-    LIBCOLD.tukey.restype = as_c_void_p()
-    LIBCOLD.tukey(
+    LIBCOLD.footprint.restype = as_c_void_p()
+    LIBCOLD.footprint(
         as_c_int(n),
         as_c_float(alpha), 
+        as_c_float(decay), 
         as_c_float_p(sig))
     return sig
 
