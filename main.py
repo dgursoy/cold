@@ -22,19 +22,18 @@ def main(path, debug=False):
     """
 
     file, geo, algo = cold.config(path)
-    dat, ind = cold.load(file)
-    msk, grd = cold.mask(geo['mask'])
-    pos, sig, tau = cold.decode(dat, msk, grd, geo, algo)
-    dep, lau = cold.resolve(dat, ind, pos, sig, tau, geo)
+    data, ind = cold.load(file)
+    mask = cold.mask(geo['mask'])
+    pos, sig = cold.decode(data, mask, geo, algo)
+    dep, lau = cold.resolve(data, ind, pos, sig, geo)
 
     shape = geo['detector']['shape']
     cold.saveimg('tmp/pos/pos', pos, ind, shape)
-    cold.saveimg('tmp/sig/sig', sig, ind, shape)
-    cold.saveimg('tmp/tau/tau', tau, ind, shape)
+    cold.plotarr('tmp/sig/sig', sig, plots=False)
     cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
     cold.saveplt('tmp/dep/dep', dep, geo['source']['grid'])
     if debug is True:
-        cold.plotresults(dat, ind, msk, grd, pos, sig, tau, geo, algo)
+        cold.plotresults(data, ind, mask, pos, sig, geo, algo)
 
 if __name__ == '__main__':
     fire.Fire(main)

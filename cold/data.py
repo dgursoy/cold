@@ -16,7 +16,7 @@ __docformat__ = 'restructuredtext en'
 
 def config(path):
     stream = open(path, 'r')
-    pars = yaml.load(stream)
+    pars = yaml.safe_load(stream)
     return pars['file'], pars['geo'], pars['algo']
 
 
@@ -79,8 +79,7 @@ def initdata(files, key):
 def loadh5(file, key):
     import h5py
     f = h5py.File(file, 'r')
-    value = f[key].value
-    f.close()
+    value = f[key][:]
     logging.info("Loaded: " + str(file))
     return value
 
@@ -108,6 +107,7 @@ def tagpixels(data, threshold):
     img = np.mean(data, axis=2)
     pixels = np.zeros(img.shape, dtype='int16')
     pixels[img >= threshold] = 1
+    pixels[img == 65535] = 0
     return pixels
 
 
@@ -152,18 +152,28 @@ def expand(data, index, shape):
 
 
 def pack(data):
+
+    # Number pf processes
     chunks = len(data)
-    dx = 0
+
+    # Number of total pixels
+    npix = 0
     for m in range(chunks):
-        dx += data[m].shape[0]
+        npix += data[m].shape[0]
+    
+    # Initialize array
     try:
         dy = data[m].shape[1]
-        arr = np.zeros((dx, dy), dtype=data[0].dtype)
+        arr = np.zeros((npix, dy), dtype=data[0].dtype)
     except IndexError:
-        arr = np.zeros((dx, ), dtype=data[0].dtype) 
+        arr = np.zeros((npix, ), dtype=data[0].dtype) 
+
+    # Write to array
+    ind = 0
     for m in range(chunks):
-        begin = m * data[m].shape[0]
-        end = (m + 1) * data[m].shape[0]
+        begin = ind
+        end = begin + data[m].shape[0]
+        ind += data[m].shape[0]
         arr[begin:end] = data[m]
     return arr
 
@@ -187,6 +197,7 @@ def saveplt(path, vals, grid):
     plt.plot(_grid, _vals)
     plt.grid()
     plt.subplot(212)
+    _vals[_vals < 1] = 0
     plt.semilogy(_grid, _vals)
     plt.grid()
     plt.xlabel('[mu]')
@@ -194,3 +205,23 @@ def saveplt(path, vals, grid):
     plt.savefig(path)
     plt.close()
     logging.info("Saved: " + str(path) + ".png")
+
+
+def plotarr(path, arr, plots=False):
+    import matplotlib.pyplot as plt
+    import dxchange
+    arr = pack(arr)
+    dxchange.write_tiff(arr, path)
+    logging.info("Saved: " + str(path) + ".tiff")
+    if plots is True:
+        p = Path(path).parents[0]
+        if not os.path.exists(p):
+            os.makedirs(p)
+        for m in range(len(arr)):
+            plt.figure(figsize=(8, 3))
+            plt.plot(arr[m], 'ro-')
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(str(path) + "-" + str(m))
+            plt.close()
+            logging.info("Saved: " + str(path) + "-" + str(m) + ".png")

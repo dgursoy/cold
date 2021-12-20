@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import numpy as np
-from cold import footprint, convolve
+from scipy import signal
 import logging
 
 
@@ -15,12 +15,21 @@ def mask(mask):
     """Returns a mask."""
     grid = creategrid(mask)
     vals = gridvals(mask, grid)
+    vals, grid = padmask(mask, vals, mask['pad'])
+    return vals
+
+
+def padmask(mask, vals, pad):
+    vals = np.pad(vals, pad)
+    padlen = 2 * pad * mask['resolution']
+    totlen = masklength(mask) + padlen
+    grid = np.arange(0, totlen, mask['resolution'])
     return vals, grid
 
 
 def creategrid(mask):
     length = masklength(mask)
-    grid =  np.arange(0, length, mask['resolution'])
+    grid = np.arange(0, length, mask['resolution'])
     logging.info("Mask grid created.")
     return grid
 
@@ -43,6 +52,7 @@ def plotmask(mask, grid):
     plt.grid(True)
     plt.tight_layout()
     plt.show()
+    plt.close()
 
 
 def loadmask(mask):
@@ -74,8 +84,9 @@ def gridvals(mask, grid):
 
 def widen(mask, vals):
     size = int(mask['widening'] / mask['resolution'])
-    kernel = footprint(size, 0.0, 0.0)
-    vals = convolve(vals, kernel)
+    kernel = signal.tukey(size, alpha=0.0)
+    kernel /= kernel.sum()
+    vals = signal.convolve(vals, kernel, 'same')
     vals[vals > 0] = 1
     logging.info("Mask widened.")
     return vals
@@ -83,8 +94,9 @@ def widen(mask, vals):
 
 def smooth(mask, vals):
     size = int(mask['smoothness'] / mask['resolution'])
-    kernel = footprint(size, 1.0, 0.0)
-    vals = convolve(vals, kernel)
+    kernel = signal.tukey(size, alpha=1.0)
+    kernel /= kernel.sum()
+    vals = signal.convolve(vals, kernel, 'same')
     logging.info("Mask smoothed.")
     return vals
 

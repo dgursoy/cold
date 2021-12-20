@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 
 import numpy as np
-import ctypes
-import cv2
 import logging
-from cold import recpos, recsig, rectau, recdec, footprint, convolve, pack, saveplt
+from scipy import signal, ndimage, optimize, linalg
+from cold import pack, saveplt, partition
 import multiprocessing
 import os
 
@@ -14,69 +13,178 @@ __copyright__ = "Copyright (c) 2021, UChicago Argonne, LLC."
 __docformat__ = 'restructuredtext en'
 
 
-LIBCOLD = ctypes.cdll.LoadLibrary(
-    'build/lib.macosx-10.7-x86_64-3.6/libcold.cpython-36m-darwin.so')
+
+def decode(data, mask, geo, algo):
+    """Decodes the position and pixel footprints and their positions
+    on the mask using coded measurement data."""
+
+    # Number pf processes
+    chunks = len(data)
+
+    # Number of total pixels
+    npix = 0
+    for item in data:
+        npix += item.shape[0]
+
+    # Scaling factor
+    factor = stretchfactor(
+        geo['mask']['resolution'], 
+        geo['mask']['step'])
+
+    # Initialize parameters
+    data = initdata(data, factor)
+    mask = initmask(mask)
+    pos = initpos(algo, chunks, npix, factor)
+    sig = initsig(algo, chunks, npix, factor)
+
+    # Pack arguments as list and run
+    args = packdecodeargs(data, mask, pos, sig, algo, chunks)
+    results = runpar(_decode, args, chunks)
+    
+    # Unpack results and rescale them
+    for m in range(chunks):
+        pos[m] = results[m][0] / factor
+        sig[m] = stretcharr(results[m][1], 1 / factor)
+    return pos, sig
 
 
-
-def decode(data, mask, grid, geo, algo):
-    """Returns the mask position and the signal."""
+def stretchlist(data, factor):
     data = data.copy()
-    mask = np.abs(mask.copy() - 1)
-    ratio = getratio(grid, geo['mask']['step'])
-    for m in range(len(data)):
-        data[m] = stretch(data[m], ratio)
-    msk = [mask] * len(data)
-    pos = [np.array(algo['init'][0] * ratio, dtype='int32')] * len(data)
-    sig = [np.array(algo['init'][1] * ratio, dtype='int32')] * len(data)
-    tau = [np.array(algo['init'][2], dtype='float32')] * len(data)
-    dec = [np.array(algo['init'][3] / np.sqrt(ratio), dtype='float32')] * len(data)
-    alg = [algo] * len(data)
-    rat = [ratio] * len(data)
-    results = runpar(_decode, [data, msk, pos, sig, tau, dec, alg, rat], len(data))
-    for m in range(len(data)):
-        pos[m] = results[m][0] / ratio
-        sig[m] = results[m][1] / ratio
-        tau[m] = results[m][2]
-        dec[m] = results[m][3] * np.sqrt(ratio)
-    return pos, sig, tau, dec
+    chunks = len(data)
+    for m in range(chunks):
+        data[m] = stretcharr(data[m], factor)
+    return data
+
+
+def stretcharr(arr, factor, order=1):
+    arr = arr.copy()
+    if len(arr.shape) == 2:
+        zoom = [1, factor]
+    elif len(arr.shape) == 1:
+        zoom = factor
+    arr = ndimage.zoom(arr, zoom, order=order)
+    return arr
+        
+    
+def initdata(data, factor):
+    return stretchlist(data, factor)
+
+
+def initmask(mask):
+    return invert(mask)
+
+
+def initpos(algo, chunks, npix, factor):
+    pos = np.array(algo['pos']['init'] * factor, dtype='float32')
+    pos = np.zeros((npix, ), dtype='float32')
+    return partition(pos, chunks)
+
+
+def initsig(algo, chunks, npix, factor):
+    maxsize = algo['sig']['init']['maxsize']
+    avgsize = algo['sig']['init']['avgsize']
+    sig = np.zeros(maxsize, dtype='float32')
+    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+    sig[first:first+avgsize] = footprnt(avgsize)
+    sig = stretcharr(sig, factor) / factor
+    sig = np.tile(sig, (npix, 1))
+    return partition(sig, chunks)
+
+
+def packdecodeargs(data, mask, pos, sig, algo, chunks):
+    mask = [mask] * chunks
+    algo = [algo] * chunks
+    logging.info("Packed arguments as list")
+    return [data, mask, pos, sig, algo]
+
+
+def unpackdecodeargs(args):
+    data = args[0]
+    mask = args[1]
+    pos = args[2]
+    sig = args[3]
+    algo = args[4]
+    logging.info("Unpacked list.")
+    return data, mask, pos, sig, algo
+
+
+def stretchfactor(resolution, step):
+    factor = step / resolution
+    logging.info("Factor is calculated: " + str(factor))
+    return factor
 
 
 def _decode(args):
-    """Returns the mask position and the signal."""
-    data = args[0]
-    mask = args[1]
-    pos0 = args[2]
-    sig0 = args[3]
-    tau0 = args[4]
-    dec0 = args[5]
-    algo = args[6]
-    ratio = args[7]
+    data, mask, pos, sig, algo = unpackdecodeargs(args)
     npix = data.shape[0]
-    pos = np.zeros((npix, ), dtype='int32')
-    sig = np.zeros((npix, ), dtype='int32')
-    tau = np.zeros((npix, ), dtype='float32')
-    dec = np.zeros((npix, ), dtype='float32')
-    for m in range(data.shape[0]):
-        pos[m], sig[m], tau[m], dec[m] = pixsolve(data[m], mask, pos0, sig0, tau0, dec0, algo)
-        if pos[m] > 0:
-            logging.info("Pixel decoded: " + 
-                str(m) + '/' + str(npix - 1) + 
-                " pos=" + str(pos[m] / ratio) + 
-                " sig=" + str(sig[m] / ratio) + 
-                " tau=" + str(tau[m]) + 
-                " dec=" + str(dec[m] * np.sqrt(ratio)))
-    return pos, sig, tau, dec
+    for m in range(npix):
+        pos[m], sig[m] = pixdecode(data[m], mask, pos[m], sig[m], algo)
+        logging.info('Pixel decoded: ' +
+            str(m) + '/' + str(npix - 1) + 
+            ' pos=' + str(pos[m].squeeze()))
+    return pos, sig
 
 
-def pixsolve(data, mask, pos, sig, tau, dec, algo):
-    """Returns the mask position and the signal footprintof  a single pixel."""
-    for m in range(algo['iters']):
-        pos = recpos(data, mask, pos, sig, tau, dec, algo['method'])
-        sig = recsig(data, mask, pos, sig, tau, dec, algo['method'])
-        tau = rectau(data, mask, pos, sig, tau, dec, algo['method'])
-        dec = recdec(data, mask, pos, sig, tau, dec, algo['method'])
-    return pos, sig, tau, dec
+def pixdecode(data, mask, pos, sig, algo):
+    """The main function for decoding pixel data."""
+    data = normalize(data)
+    pos = posrecon(data, mask, pos, sig, algo)
+    sig = sigrecon(data, mask, pos, sig, algo)
+    return pos, sig
+
+
+def posrecon(data, mask, pos, sig, algo):
+    sim = signal.convolve(mask, sig, 'same')
+    costsize = sim.size - data.size
+    cost = np.zeros((costsize), dtype='float32')
+    for m in range(costsize):
+        if algo['pos']['method'] == 'lsqr':
+            cost[m] = np.sum(np.power(sim[m:m+data.size] - data, 2))
+        pos = np.where(cost.min() == cost)[0][0]
+    return pos
+
+
+def sigrecon(data, mask, pos, sig, algo):
+    first = int((sig.size - 1) / 2)
+    last = int(mask.size + first - sig.size - data.size)
+    if pos > first and pos < last:
+        kernel = np.zeros((data.size, sig.size), dtype='float32')
+        for m in range(data.size):
+            begin = pos - first + m
+            end =  begin + sig.size
+            kernel[m] = mask[begin:end]
+        if algo['sig']['method'] == 'nnls':
+            sig = optimize.nnls(kernel, data)[0][::-1]
+        if algo['sig']['method'] == 'pinv':
+            ikernel = linalg.pinv(kernel, algo['sig']['init']['atol'])
+            sig = np.dot(ikernel, data)[::-1]
+        sig /= sig.sum()
+    else:
+        sig *= 0
+    return sig
+
+
+def normalize(data):
+    data = data.copy()
+    diff = max(data) - min(data)
+    stdmin = 2 * np.sqrt(min(data))
+    if stdmin > diff * 0.5:
+        stdmin = 0
+    data = data - (min(data) + stdmin)
+    stdmax = 2 * np.sqrt(max(data))
+    data = data / (max(data) - stdmax)
+    return data
+
+
+def footprnt(val):
+    """Create a discrete signal from its parameters."""
+    window = signal.windows.hann(int(val))
+    window /= sum(window)
+    return window
+
+
+def invert(mask):
+    return np.abs(mask.copy() - 1)
 
 
 def stackargs(args, nproc):
@@ -97,48 +205,40 @@ def runpar(myfunc, args, nproc):
     return results
 
 
-def plotresults(dat, ind, msk, grd, pos, sig, tau, dec, geo, algo):
-    ratio = getratio(grd, geo['mask']['step'])
+def plotresults(dat, ind, msk, pos, sig, geo, algo):
+    factor = stretchfactor(
+        geo['mask']['resolution'], 
+        geo['mask']['step'])
     _dat = pack(dat)
     _ind = pack(ind)
     _pos = pack(pos)
     _sig = pack(sig)
-    _tau = pack(tau)
-    _dec = pack(dec)
-    _dat = stretch(_dat.copy(), ratio)
+    _dat = stretcharr(_dat.copy(), factor)
     _msk = msk.copy()
     npix = _ind.shape[0]
     for m in range(npix):
         if _pos[m] > 0:
-            if algo['method'] == 'lsqr':
-                plotlsqr(_dat[m], _ind[m], _msk, _pos[m], _sig[m], _tau[m], _dec[m], ratio, m)
+            if algo['pos']['method'] == 'lsqr':
+                plotlsqr(_dat[m], _ind[m], _msk, _pos[m], _sig[m], factor, m)
             logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
 
 
-def plotlsqr(dat, ind, msk, pos, sig, tau, dec, ratio, id):
+def plotlsqr(dat, ind, msk, pos, sig, factor, id):
     import matplotlib.pyplot as plt 
     from scipy import ndimage   
-    kernel = footprint(int(sig * ratio), tau, dec / np.sqrt(ratio))
-    _msk = np.abs(msk - 1)
-    _msk = convolve(_msk, kernel)
-    tmp = ndimage.shift(_msk, -pos * ratio, order=1)[0:dat.size]
+    sig = ndimage.zoom(sig, factor)
+    _msk = invert(msk)
+    _msk = signal.convolve(_msk, sig, 'same')
+    tmp = ndimage.shift(_msk, -pos * factor, order=1)[0:dat.size]
     plt.figure(figsize=(16, 3))
     plt.subplot(211)
-    plt.title(str(id) + ' ' + 
-        ' ind=' + str(ind) + 
-        ' pos=' + str(pos * ratio) + 
-        ' sig=' + str(sig * ratio) + 
-        ' tau=' + str(tau) + 
-        ' dec=' + str(dec / np.sqrt(ratio)))
+    plt.title(str(id) + ' ' + ' ind=' + str(ind))
     plt.grid('on')
     plt.plot(dat)
     plt.subplot(212)
     tmp = (tmp - tmp.min()) / (tmp.max() - tmp.min())
     plt.plot(tmp, 'r')
-    stdmin = 2 * np.sqrt(dat.min())
-    dat = dat  - (dat.min() + stdmin)
-    stdmax = 2 * np.sqrt(dat.max())
-    dat = dat / (dat.max() - stdmax)
+    dat = normalize(dat)
     plt.plot(dat)
     plt.grid('on')
     plt.tight_layout()
@@ -146,47 +246,80 @@ def plotlsqr(dat, ind, msk, pos, sig, tau, dec, ratio, id):
         os.makedirs('tmp/plot')
     plt.savefig('tmp/plot/plot-' + str(id) + '.png')
     plt.close()
-        
-
-def getratio(grid, step):
-    ratio = step / (grid[1] - grid[0])
-    logging.info("Ratio of signal-to-mask discretization is calculated: " + str(ratio))
-    return ratio
 
 
-def stretch(values, ratio):
-    dx, dy = values.shape
-    numimgs = int(dy * ratio)
-    values = cv2.resize(values, (numimgs, dx))
-    logging.info("Signal and mask discretizations are matched.")
-    return values
+def calibratetilt(data, ind, pos, sig, geo):
+    # Number pf processes
+    chunks = len(data)
 
+    # Initialize 
+    tiltx = np.arange(*geo['mask']['calibrate']['tiltx'])
+    tilty = np.arange(*geo['mask']['calibrate']['tilty'])
 
-def calibrate(data, ind, pos, sig, tau, dec, geo):
-    _geo = [geo] * len(data)
-    _dist = np.arange(*geo['mask']['calibrate']['dist'])
-    dist = 1.165
+    cost = np.zeros((len(tilty), len(tiltx)))
     maximum = 0
-    for k in range(_dist.size):
-        _dis = [_dist[k]] * len(data)
-        depth = runpar(_calibrate, [data, ind, pos, sig, tau, dec, _geo, _dis], len(data))
-        saveplt('tmp/dep-dis/dep-' + str(k), depth, geo['source']['grid'])
-        if np.max(sum(depth)) > maximum:
-            maximum = np.max(sum(depth))
-            dist = _dist[k]
-    return dist
+    opttiltx = 0
+    opttilty = 0
+    for m in range(len(tilty)):
+        # Pack arguments as list and run
+        geo['mask']['tilty'] = tilty[m]
+        for n in range(len(tiltx)):
+            geo['mask']['tiltx'] = tiltx[n]
+            args = packcalibrateargs(data, ind, pos, sig, geo, chunks)
+            depth = runpar(_calibrate, args, chunks)
+            cost[m, n] = np.max(depth)
+            # cost[k, m] = np.sqrt(np.sum(np.power(depth, 2)))
+
+            # Save results
+            saveplt('tmp/dep-tilt/dep-' + str(m) + '-' + str(n), depth, geo['source']['grid'])
+            if cost[m, n] > maximum:
+                maximum = cost[m, n]
+                opttiltx = tiltx[n]
+                opttilty = tilty[m]
+            print (cost[m, n], maximum, opttiltx, opttilty)
+    return opttiltx, opttilty
+
+
+def calibratedist(data, ind, pos, sig, geo):
+    # Number pf processes
+    chunks = len(data)
+
+    # Initialize 
+    dist = np.arange(*geo['mask']['calibrate']['dist'])
+
+    maximum = 0
+    optdist = 0
+    for k in range(len(dist)):
+        # Pack arguments as list and run
+        geo['mask']['dist'] = dist[k]
+        args = packcalibrateargs(data, ind, pos, sig, geo, chunks)
+        depth = runpar(_calibrate, args, chunks)
+
+        # Save results
+        saveplt('tmp/dep-dist/dep-' + str(k), depth, geo['source']['grid'])
+        if np.sqrt(np.sum(np.power(depth, 2))) > maximum:
+            maximum = np.sqrt(np.sum(np.power(depth, 2)))
+            optdist = dist[k]
+    return optdist
+
+
+def packcalibrateargs(data, ind, pos, sig, geo, chunks):
+    geo = [geo] * chunks
+    return [data, ind, pos, sig, geo]
+
+
+def unpackcalibrateargs(args):
+    data = args[0]
+    ind = args[1]
+    pos = args[2]
+    sig = args[3]
+    geo = args[4]
+    return data, ind, pos, sig, geo
 
 
 def _calibrate(args):
     # Unpack arguments
-    dat = args[0]
-    ind = args[1]
-    pos = args[2]
-    sig = args[3]
-    tau = args[4]
-    dec = args[5]
-    geo = args[6]
-    geo['mask']['dist'] = args[7]
+    data, ind, pos, sig, geo = unpackcalibrateargs(args)
 
     # Source beam
     grid = np.arange(*geo['source']['grid'])
@@ -194,96 +327,118 @@ def _calibrate(args):
     # Initializations
     depth = np.zeros((len(grid), ), dtype='float32')
 
-    npixs = dat.shape[0]
-    for m in range(npixs):
+    # Number of pixels to be processed
+    npix = data.shape[0]
+
+    for m in range(npix):
         # Calculate the signal footprint along the beam
-        fp = _footprint(dat[m], ind[m], pos[m], sig[m], tau[m], dec[m], geo)
+        fp = _footprint(data[m], ind[m], pos[m], sig[m], geo)
         depth += fp
     return depth
 
 
-def footprintcor(geo, sig):
-    p = geo['detector']['size'][0] / geo['detector']['shape'][0] * 1e3 # 200
-    d = geo['mask']['dist'] # 1.17
-    c = geo['detector']['pos'][2] # 513.140
-    b = c - d # 511.969
-    a = (sig * c - p * d) / (p - sig)
-    return p * a / (a + c)
+def resolve(data, ind, pos, sig, geo):
+    """Resolves depth information."""
+    # Number pf processes
+    chunks = len(data)
 
+    # Pack arguments as list and run
+    args = packresolveargs(data, ind, pos, sig, geo, chunks)
+    results = runpar(_resolve, args, chunks)
 
-def resolve(dat, ind, pos, sig, tau, dec, geo):
-    geo = [geo] * len(dat)
-    results = runpar(_resolve, [dat, ind, pos, sig, tau, dec, geo], len(dat))
-    depth = [None] * len(dat)
-    laue = [None] * len(dat)
-    for m in range(len(dat)):
+    # Unpack results
+    depth = [None] * chunks
+    laue = [None] * chunks
+    for m in range(chunks):
         depth[m] = results[m][0]
         laue[m] = results[m][1]
     return depth, laue
 
 
-def _resolve(args):
-    # Unpack arguments
-    dat = args[0]
+def packresolveargs(data, ind, pos, sig, geo, chunks):
+    geo = [geo] * chunks
+    return [data, ind, pos, sig, geo]
+
+
+def unpackresolveargs(args):
+    data = args[0]
     ind = args[1]
     pos = args[2]
     sig = args[3]
-    tau = args[4]
-    dec = args[5]
-    geo = args[6]
+    geo = args[4]
+    return data, ind, pos, sig, geo
+
+
+def _resolve(args):
+    # Unpack arguments
+    data, ind, pos, sig, geo = unpackresolveargs(args)
     
     # Number of pixels to be processed
-    npixs = dat.shape[0]
+    npix = data.shape[0]
 
     # Discrete grid along the source beam
     grid = np.arange(*geo['source']['grid'])
 
     # Initializations
     depth = np.zeros((len(grid), ), dtype='float32')
-    laue = np.zeros((npixs, len(grid)), dtype='float32')
-    for m in range(npixs):
+    laue = np.zeros((npix, len(grid)), dtype='float32')
+    for m in range(npix):
         # Calculate the signal footprint along the beam
-        fp = _footprint(dat[m], ind[m], pos[m], sig[m], tau[m], dec[m], geo)
+        fp = _footprint(data[m], ind[m], pos[m], sig[m], geo)
         laue[m] += fp
         depth += fp
     return depth, laue
 
 
-def _footprint(dat, ind, pos, sig, tau, dec, geo):
+def _footprint(dat, ind, pos, sig, geo):
     # Detector pixel position
-    p0 = pix2pos(ind, geo)
+    p0 = pix2pos(ind, geo) # [<->, dis2det, v^]
 
     # Source beam
     s1 = np.array([-100, 0, 0], dtype='float32')
     s2 = np.array([100, 0, 0], dtype='float32')
 
     # Points on the mask for ray tracing
-    p1 = np.array([-pos * 1e-3, geo['mask']['dist'], -100], dtype='float32')
-    p2 = np.array([-pos * 1e-3, geo['mask']['dist'], 100], dtype='float32')
+    tx = geo['mask']['tiltx'] * (p0[0] - geo['mask']['cenx']) / geo['detector']['size'][0] * 0.5
+    ty = geo['mask']['tilty'] * (p0[2] - geo['mask']['ceny']) / geo['detector']['size'][1] * 0.5
+    # print (pos, tx, p0[0], p0[1], p0[2])
+    p1 = np.array([-(pos + tx + ty) * 1e-3, geo['mask']['dist'], -100], dtype='float32')
+    p2 = np.array([-(pos + tx + ty) * 1e-3, geo['mask']['dist'], 100], dtype='float32')
     intersection = intersect(s1, s2, p0, p1, p2)
 
-    fp = __footprint(dat, sig, tau, dec, geo, intersection)
-    return fp
+    # Discrete grid along the source beam
+    gr = geo['source']['grid']
+    grid = np.arange(gr[0], gr[1], gr[2])
+    extgrid = np.arange(gr[0] - 1.0, gr[1] + 1.0, gr[2])
 
-
-def __footprint(dat, sig, tau, dec, geo, intersection):
     # Demagnification of the footprint
     _sig = footprintcor(geo, sig)
 
-    # A fine discrete grid along the source beam
-    gr = geo['source']['grid']
-    grid = np.arange(gr[0], gr[1], gr[2])
-
     # Initialize fine footprint
-    fp = np.zeros((len(grid), ), dtype='float32')
+    fp = np.zeros((len(extgrid), ), dtype='float32')
 
     # Index along the beam
-    dx = np.argmin(np.abs(grid - intersection))
-    if dx > 0 and dx < len(grid) - 1:
-        fp[dx] = dat.max() - 2 * np.sqrt(dat.max())
-        kernel = footprint(int(_sig * 1e-3 / gr[2]), tau, dec / (1e-3 / gr[2]))
-        fp = convolve(fp, kernel)
-    return fp
+    dx = np.argmin(np.abs(extgrid - intersection))
+    first = int((_sig.size - 1) / 2)
+    if extgrid[dx] > gr[0] and extgrid[dx] < gr[1]:
+        _fp = _sig * (dat.max() - 2 * np.sqrt(dat.max()))
+        begin = dx - first
+        end = begin + _sig.size
+        fp[begin:end] = _fp
+
+    x = np.argmin(np.abs(extgrid - gr[0]))
+    return fp[x:x+grid.size]
+
+
+def footprintcor(geo, sig):
+    gr = geo['source']['grid']
+    p = geo['detector']['size'][0] / geo['detector']['shape'][0] * 1e3 # 200
+    d = geo['mask']['dist'] # 1.17
+    c = geo['detector']['pos'][2] # 513.140
+    b = c - d # 511.969
+    a = (sig.size * c - p * d) / (p - sig.size)
+    factor =  p * a / (a + c) / sig.size  / (1e3 * gr[2])
+    return stretcharr(sig, factor, order=3) / factor
 
 
 def intersect(s1, s2, p0, p1, p2):

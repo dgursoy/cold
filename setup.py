@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 
-from setuptools import setup, Extension
-
-coldc = Extension(
-    name='libcold',
-    extra_compile_args=['-std=c99', '-DWIN32'],
-    sources=['source/core.c'], 
-    include_dirs=['include'])
+from setuptools import setup
 
 setup(
     name='cold',
@@ -15,6 +9,5 @@ setup(
     author='Doga Gursoy',
     author_email='dgursoy@anl.gov',
     packages=['cold'],
-    ext_modules=[coldc],
     license='BSD-3'
     )
