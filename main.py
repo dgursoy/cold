@@ -30,8 +30,8 @@ def main(path, debug=False):
     shape = geo['detector']['shape']
     cold.saveimg('tmp/pos/pos', pos, ind, shape)
     cold.plotarr('tmp/sig/sig', sig, plots=False)
-    cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
     cold.saveplt('tmp/dep/dep', dep, geo['source']['grid'])
+    cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
     if debug is True:
         cold.plotresults(data, ind, mask, pos, sig, geo, algo)
 
