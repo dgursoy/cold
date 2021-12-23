@@ -1,0 +1,70 @@
+$filetype		PixelPeakList
+$inputImage		Si_wire_mar01_500.h5
+$xdim			2048		// number of binned pixels along X
+$ydim			2048		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			1			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			1			// binning along Y for the ROI (un-binned pixels)
+$detector_ID	PE1621 723-3335		// detector ID
+//
+$boxsize		20			// box size used for peak fitting
+$minwidth		0.01		// min allowed width of a peak
+$maxwidth		20			// max allowed width of a peak
+$maxCentToFit	20			// max diff between initial & fitted peak position
+$maxRfactor		0.1			// max allowed R-factor
+$threshold		84.2444		// threshold for blob searching
+$executionTime	3.36		// execution time (sec)
+//
+// fitted peak positions relative to the start of the ROI (not detector origin)
+//    peak positions are in zero based binned pixels
+$Npeaks		44				// number of fitted peaks in following table
+$peakList	5 44			// fitX fitY intens integral boxSize 
+       20.327     1874.511        217.0000         3.09500      20
+       35.883      313.510        233.0000         2.02100      20
+       54.492     1088.468        525.0000         4.25400      20
+      187.448     1690.495       4101.0000        25.46100      20
+      199.381      494.343       4235.0000        21.54400      20
+      210.652     1088.857       2837.0000        14.26500      20
+      316.699     1089.435        401.0000         0.12800      20
+      381.362     1498.890        563.0000         1.18300      20
+      387.596      683.516        486.0000         3.65600      20
+      391.527       29.513       1524.0000        10.75000      20
+      393.569     1089.548        268.0000         1.84600      20
+      432.582     1983.453        221.0000         0.41000      20
+      446.160      211.547        259.0000        -0.43400      20
+      480.117     1851.058        231.0000         1.05400      20
+      490.579      340.459        230.0000         3.15400      20
+      880.533     1091.512       4112.0000        24.62900      20
+      902.415     1434.353        321.0000         1.85200      20
+      909.563     1487.300        561.0000         0.35400      20
+      911.809      699.448        624.0000         3.61400      20
+      921.502     1559.461       1879.0000        10.00000      20
+      924.132      628.436       2387.0000        11.52100      20
+      942.403     1664.280       6034.0000        31.10500      20
+      945.142      526.277       5816.0000        28.93900      20
+      958.602     1736.297        146.0000         1.73800      20
+      983.458     1829.323        376.0000         4.35300      20
+      986.448      365.706        318.0000        -1.45300      20
+     1021.155     1953.505       1062.0000         4.77100      20
+     1023.785      245.677       1037.0000         4.71300      20
+     1085.900       78.455        933.0000         4.75300      20
+     1365.560     1093.420        126.0000         0.86600      20
+     1426.449      763.169        714.0000         3.99800      20
+     1428.230     1426.623        673.0000         1.08800      20
+     1441.634     1093.788        914.0000         4.45000      20
+     1546.613     1094.458       1435.0000         7.27700      20
+     1561.387      389.563        596.0000         4.17900      20
+     1567.239     1809.584        543.0000         1.50200      20
+     1633.286      108.506        154.0000        -0.38600      20
+     1665.503      649.105       3436.0000        21.05900      20
+     1670.448     1545.064       3735.0000        22.03300      20
+     1701.448     1095.165       9451.0000        52.50000      20
+     1713.510      278.163       1431.0000         9.29900      20
+     1723.372     1926.516       1485.0000        11.07000      20
+     1951.538      123.816       1989.0000        13.52700      20
+     1953.145     1096.408      18663.0000       103.49300      20

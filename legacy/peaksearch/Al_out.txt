@@ -1,0 +1,54 @@
+$filetype		PixelPeakList
+$inputImage		AlMg_first_3841_78.h5
+$xdim			1024		// number of binned pixels along X
+$ydim			1024		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			2			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			2			// binning along Y for the ROI (un-binned pixels)
+$exposure		0.4			// exposure time (sec)
+$CCDshutterIN	1			// CCD shutter, 1=IN, 0=OUT
+$Xsample		4662.05		// sample position (micron)
+$Ysample		-5020.3
+$Zsample		-1484.75
+$depth		68			// depth for depth resolved images (micron)
+$scanNum		5791		// scan number
+$beamBad		0			// beam bad flag (TRUE==bad)
+$lightOn		1			// flag, TRUE=illuminator ON
+$energy			12.6178		// monochromator energy (keV)
+$hutchTemperature	0	// hutch temperature (C)
+$sampleDistance	0	// Keyence measure of sample posiiton (micron)
+$monoMode		white slitted	// monochromator mode or position
+$dateExposed	2009-07-11 01:46:44-0600
+$userName		John Budai
+$title			Al-Mg Grain Growth
+$sampleName		Tony Al-Mg 300C
+$beamline		34ID-E
+$detector_ID	PE1621 723-3335
+//
+$boxsize		18			// box size used for peak fitting
+$minwidth		0.0113		// min allowed width of a peak
+$maxwidth		18			// max allowed width of a peak
+$maxCentToFit	18			// max diff between initial & fitted peak position
+$maxRfactor		0.5			// max allowed R-factor
+$threshold		668.039		// threshold for blob searching
+$totalSum		345007		// sum of all pixels in image
+$sumAboveThreshold	211703	// sum of all pixels in image above threshold
+$numAboveThreshold	62		// number of pixels above threshold
+$programName	peaksearch
+$executionTime	0.77		// execution time (sec)
+//
+// fitted peak positions relative to the start of the ROI (not detector origin)
+//    peak positions are in zero based binned pixels
+$Npeaks		6				// number of fitted peaks in following table
+$peakList	5 6			// fitX fitY intens integral
+       89.654      362.679       2628.0000        13.22500
+      139.324      785.360       2146.0000        11.15000
+      577.607      289.273       3258.0000        14.34900
+      626.878      438.072       7134.0000        25.55000
+      665.192      522.540       3253.0000        17.16300
+      879.000      829.655      42701.0000       104.18100

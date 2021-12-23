@@ -1,0 +1,59 @@
+$filetype		PixelPeakList
+$inputImage		WW_4989_27.h5
+$xdim			2048		// number of binned pixels along X
+$ydim			2048		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			1			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			1			// binning along Y for the ROI (un-binned pixels)
+$exposure		1.9998			// exposure time (sec)
+$CCDshutterIN	1			// CCD shutter, 1=IN, 0=OUT
+$Xsample		6013		// sample position (micron)
+$Ysample		-7502
+$Zsample		-6651.5
+$depth			18.5			// depth for depth resolved images (micron)
+$scanNum		5926		// scan number
+$beamBad		0			// beam bad flag (TRUE==bad)
+$lightOn		1			// flag, TRUE=illuminator ON
+$energy			17.616		// monochromator energy (keV)
+$hutchTemperature	0	// hutch temperature (C)
+$sampleDistance	0	// Keyence measure of sample posiiton (micron)
+$monoMode		white slitted	// monochromator mode or position
+$dateExposed	2009-07-18 23:58:59-0600
+$userName		Ben Larson
+$title			Cu 001 Compressed
+$sampleName		Cu 1%_Polished
+$beamline		34ID-E
+$detector_ID	PE1621 723-3335
+//
+$boxsize		8			// box size used for peak fitting
+$minwidth		0.2825		// min allowed width of a peak
+$maxwidth		12			// max allowed width of a peak
+$maxCentToFit	8			// max diff between initial & fitted peak position
+$maxRfactor		0.5			// max allowed R-factor
+$threshold		116.486		// threshold for blob searching
+$minSeparation	50			//  minimum separation between any two peaks
+$smooth			1			//  fit to smoohted image
+$totalSum		4.94376e+06		// sum of all pixels in image
+$sumAboveThreshold	620081	// sum of all pixels in image above threshold
+$numAboveThreshold	1780	// number of pixels above threshold
+$NpeakMax		50			// limit on number of peaks to search for
+$programName	./peaksearchBox
+$executionTime	8.39		// execution time (sec)
+//
+// fitted peak positions relative to the start of the ROI (not detector origin)
+//    peak positions are in zero based binned pixels
+$Npeaks		8				// number of fitted peaks in following table
+$peakList	5 8			// fitX fitY intens integral
+      876.158     1106.671       3619.0000       160.43800
+      986.661      380.501        576.0000        19.17200
+     1104.801      105.132        521.0000        22.15400
+      979.478     1845.007        470.0000        15.58100
+      961.392     1683.472        269.0000        10.12500
+      894.629     1577.237        244.0000         3.38700
+      963.945      548.959        222.0000         8.14000
+      964.392     1110.928        105.0000         5.39200

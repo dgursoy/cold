@@ -1,0 +1,94 @@
+$IndexFile
+// Found 1 patterns, indexed 36 out of 44 spots in 00:00:01 = (1.33 sec)
+// ------------------------------------------------------------
+$peakFile		'generic_Peaks.txt'		// input data file
+$keVmaxCalc		17 			// max energy (keV) for calculated hkl
+$angleTolerance		0.1 	// how close to vectors have to be considered to have the correct angle (deg)
+$keVmaxTest		24.04		// max energy (keV) matching a spot (for calculating Gtest[][3])
+$hklPrefer		'{0,0,2}'	// preferred hkl, this should be hkl near center of pattern
+$cone		72 				// angle from the preferred hkl to look for acceptable hkl when calculating (deg)
+$NpatternsFound		1		// number of patterns found
+$Nindexed		36 			// number of spots indexed
+$NiData		44 				// total number of data spots
+$executionTime		1.33	// execution time (sec)
+// ------------------------------------------------------------
+// these are parameters from header of $peakFile
+$filetype		PeaksFile
+$structureDesc		Si
+$latticeParameters	{ 0.54310206, 0.54310206, 0.54310206, 90, 90, 90 }	// 2006, CODATA
+$latticeAlphaT		2.56E-6				// a = ao*(1+2.56E-6*(TempC-22.5))
+$lengthUnit			nm					// length unit for lattice constants a,b,c
+$SpaceGroup			227					// Space Group number from International Tables
+$AtomDesctiption1	{Si001  0 0 0 1}
+$citation http://physics.nist.gov/cuu/Constants/index.html
+$inputImage		Si_wire_mar01_500.h5
+$xdim			2048		// number of binned pixels along X
+$ydim			2048		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			1			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			1			// binning along Y for the ROI (un-binned pixels)
+$detector_ID	PE1621 723-3335		// detector ID
+$boxsize		20			// box size used for peak fitting
+$minwidth		0.01		// min allowed width of a peak
+$maxwidth		20			// max allowed width of a peak
+$maxCentToFit	20			// max diff between initial & fitted peak position
+$maxRfactor		0.1			// max allowed R-factor
+$threshold		84.2444		// threshold for blob searching
+$programName	/Users/Shared/temp_tischler/dev/pixels2qs/build/Debug/pixels2qs
+// ------------------------------------------------------------
+
+$pattern0 
+$EulerAngles0 { -44.90517564, 135.13084115,  91.54494967}	// Euler angles for this pattern (deg)
+$goodness0		2068.98						// goodness of the this pattern
+$rms_error0		0.00562					// rms error of (measured-predicted) (deg)
+$rotation_matrix0		{{0.7192126,0.4827539,0.4996818}{0.6945296,-0.5192245,-0.4980306}{0.0190209,0.7052337,-0.7087197}}
+//   rotation matrix      0.71921      0.69453      0.01902
+//   column vectors       0.48275     -0.51922      0.70523
+//                        0.49968     -0.49803     -0.70872
+$recip_lattice0		{{8.3206206,5.5850128,5.7808535}{8.0350614,-6.0069444,-5.7617505}{0.2200536,8.1588978,-8.1992271}}
+//   reciprocal matrix     8.32062       8.03506       0.22005
+//   column vectors        5.58501      -6.00694       8.15890
+//                         5.78085      -5.76175      -8.19923
+//
+$array0	 10   36             G^                         (hkl)       intens      E(keV)      err(deg)
+    [  0]   ( 0.0190613  0.7051628 -0.7087891)     (  0   0   4)    1.0000,     6.4417,     0.00221
+    [  1]   (-0.2537313  0.6856295 -0.6822994)     ( -1  -1   5)    0.1627,     8.6928,     0.00200
+    [  2]   (-0.1792784  0.6963539 -0.6949464)     ( -1  -1   7)    0.0473,    11.7297,     0.00403
+    [  3]   ( 0.0222015  0.8315150 -0.5550584)     (  1  -1   7)    0.0302,    14.6859,     0.00516
+    [  4]   ( 0.2166461  0.6860418 -0.6945582)     (  1   1   7)    0.0473,    11.7363,     0.00061
+    [  5]   (-0.2757821  0.7780552 -0.5644239)     ( -1  -3   9)    0.0098,    19.2917,     0.00705
+    [  6]   (-0.1363471  0.7006568 -0.7003496)     ( -1  -1   9)    0.0181,    14.8484,     0.00743
+    [  7]   ( 0.0215877  0.8066061 -0.5906951)     (  1  -1   9)    0.0129,    17.6048,     0.00203
+    [  8]   ( 0.0160729  0.5866241 -0.8096998)     ( -1   1   9)    0.0242,    12.8431,     0.00099
+    [  9]   ( 0.1740077  0.6925734 -0.7000453)     (  1   1   9)    0.0181,    14.8548,     0.00271
+    [ 10]   (-0.1174735  0.7933403 -0.5973367)     (  0  -2  10)    0.0168,    19.4873,     0.00498
+    [ 11]   (-0.1224001  0.5968191 -0.7929850)     ( -2   0  10)    0.0296,    14.6793,     0.00181
+    [ 12]   ( 0.1597825  0.7861190 -0.5970649)     (  2   0  10)    0.0168,    19.4962,     0.00215
+    [ 13]   ( 0.1548558  0.5895978 -0.7927131)     (  0   2  10)    0.0296,    14.6844,     0.00234
+    [ 14]   (-0.2265227  0.7716991 -0.5942794)     ( -1  -3  11)    0.0052,    21.9837,     0.00276
+    [ 15]   (-0.2309124  0.5965974 -0.7686033)     ( -3  -1  11)    0.0088,    16.9976,     0.00747
+    [ 16]   (-0.1085663  0.7027264 -0.7031280)     ( -1  -1  11)    0.0083,    18.0042,     0.00454
+    [ 17]   ( 0.0211708  0.7897595 -0.6130512)     (  1  -1  11)    0.0063,    20.6496,     0.00525
+    [ 18]   ( 0.0166406  0.6090531 -0.7929548)     ( -1   1  11)    0.0106,    15.9646,     0.00313
+    [ 19]   ( 0.1463778  0.6960862 -0.7028780)     (  1   1  11)    0.0083,    18.0106,     0.00521
+    [ 20]   ( 0.2675511  0.7588306 -0.5937950)     (  3   1  11)    0.0052,    22.0016,     0.01300
+    [ 21]   (-0.2107849  0.6923283 -0.6901096)     ( -2  -2  12)    0.0105,    20.3919,     0.00211
+    [ 22]   ( 0.2478908  0.6803819 -0.6896598)     (  2   2  12)    0.0105,    20.4052,     0.00213
+    [ 23]   (-0.1946912  0.6157889 -0.7634784)     ( -3  -1  13)    0.0046,    20.0025,     0.00369
+    [ 24]   (-0.0891614  0.7038428 -0.7047380)     ( -1  -1  13)    0.0043,    21.1800,     0.00496
+    [ 25]   ( 0.0208706  0.7776568 -0.6283425)     (  1  -1  13)    0.0034,    23.7551,     0.00582
+    [ 26]   ( 0.0170285  0.6243971 -0.7809214)     ( -1   1  13)    0.0053,    19.1137,     0.00055
+    [ 27]   ( 0.1270604  0.6982111 -0.7045260)     (  1   1  13)    0.0043,    21.1863,     0.00338
+    [ 28]   ( 0.2279784  0.6047803 -0.7630640)     (  1   3  13)    0.0046,    20.0134,     0.00322
+    [ 29]   (-0.0828726  0.6298225 -0.7723054)     ( -2   0  14)    0.0076,    20.9017,     0.00153
+    [ 30]   ( 0.1170595  0.6246152 -0.7721094)     (  0   2  14)    0.0076,    20.9070,     0.00447
+    [ 31]   (-0.1674310  0.6294327 -0.7588026)     ( -3  -1  15)    0.0027,    23.0600,     0.00165
+    [ 32]   ( 0.0173098  0.6355401 -0.7718738)     ( -1   1  15)    0.0029,    22.2803,     0.00295
+    [ 33]   ( 0.2014563  0.6198248 -0.7584409)     (  1   3  15)    0.0027,    23.0710,     0.00107
+    [ 34]   (-0.1559945  0.5670554 -0.8087731)     ( -4   0  16)    0.0045,    23.2762,     0.01089
+    [ 35]   ( 0.1868862  0.5581249 -0.8084368)     (  0   4  16)    0.0045,    23.2859,     0.01880

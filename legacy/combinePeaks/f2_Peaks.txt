@@ -1,0 +1,55 @@
+$filetype		PeaksFile
+// parameters defining the crystal structure:
+$structureDesc		Si
+$latticeParameters	{ 0.54310206, 0.54310206, 0.54310206, 90, 90, 90 }	// 2006, CODATA
+$latticeAlphaT		2.56E-6				// a = ao*(1+2.56E-6*(TempC-22.5))
+$lengthUnit			nm					// length unit for lattice constants a,b,c
+$SpaceGroup			227					// Space Group number from International Tables
+$AtomDesctiption1	{Si001  0 0 0 1}
+$citation http://physics.nist.gov/cuu/Constants/index.html
+// parameters from the peak fitting:
+$inputImage		Si_wire_mar01_500.h5
+$xdim			2048		// number of binned pixels along X
+$ydim			2048		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			1			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			1			// binning along Y for the ROI (un-binned pixels)
+$exposure		1.9998			// exposure time (sec)
+$CCDshutterIN	1			// CCD shutter, 1=IN, 0=OUT
+$Xsample		5500.05		// sample position (micron)
+$Ysample		-4242.6
+$Zsample		-1979.8
+$scanNum		5133		// scan number
+$beamBad		0			// beam bad flag (TRUE==bad)
+$lightOn		0			// flag, TRUE=illuminator ON
+$energy			7.90876		// monochromator energy (keV)
+$hutchTemperature	24.6642	// hutch temperature (C)
+$sampleDistance	1.81e-05	// Keyence measure of sample posiiton (micron)
+$monoMode		white slitted	// monochromator mode or position
+$dateExposed	2009-03-01 23:45:08-0600
+$userName		Jon Tischler
+$title			Testing
+$sampleName		Si 4 micron
+$beamline		34ID-E
+$detector_ID	PE1621 723-3335
+$boxsize		10			// box size used for peak fitting
+$minwidth		0.01		// min allowed width of a peak
+$maxwidth		20			// max allowed width of a peak
+$maxCentToFit	20			// max diff between initial & fitted peak position
+$maxRfactor		0.9			// max allowed R-factor
+$threshold		84.2444		// threshold for blob searching
+$programName	/Users/tischler/dev/peaksearch/build/Release/peaksearch
+$geoFileName	geometry.txt
+$programName	/Users/tischler/dev/pixels2qs/build/Release/pixels2qs
+
+// the following table contains xyz compotnents of G^ and the integral of the peak
+$N_Ghat+Intens 	4		// number of G^ vectors
+ 0.186,  0.55, -0.808,     21
+-0.156,  0.56, -0.808,     23
+ 0.016,  0.58, -0.809,     52
+ 0.154,  0.58, -0.792,     410
