@@ -20,7 +20,7 @@ import sphinx_rtd_theme
 
 # -- Project information -----------------------------------------------------
 
-project = 'cold'
+project = 'COLD'
 copyright = '2021, Doga Gursoy'
 author = 'Doga Gursoy'
 

@@ -3,13 +3,44 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
-Welcome to COLD's documentation!
-================================
+COLD
+====
+
+.. warning:: Still under development. It can work but expect some hiccups.
+
+COLD is a software package for processing Laue diffraction images collected 
+with coded-apertures. 
+
+Credits
+-------
+
+Coming soon.
+
+Index
+-----
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :caption: User Guide
+   :maxdepth: 1
 
+   user-gettingstarted
+   user-remarks
+   user-configoptions
+   user-aperturefocusing
+   user-peaksearching
+   user-indexing
+
+
+.. toctree::
+   :caption: Developer Guide
+   :maxdepth: 1
+
+   dev-remarks
+   dev-fileformats
+   dev-datastructures
+   dev-newmodels
+   dev-parallel
+   dev-futureplans
 
 
 Indices and tables
