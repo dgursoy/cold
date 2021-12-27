@@ -1,5 +1,0 @@
-gcc -std=gnu99 -Os -o combinePeaks main.c -static
-
-
-
-

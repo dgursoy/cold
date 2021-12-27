@@ -1,0 +1,85 @@
+$filetype		PixelPeakList
+$inputImage		Si_wire_mar01_500.h5
+$xdim			2048		// number of binned pixels along X
+$ydim			2048		// number of binned pixels along Y
+$xDimDet		2048		// total number of un-binned pixels in detector along X
+$yDimDet		2048		// total number of un-binned pixels in detector along Y
+$startx			0			// starting X of ROI (un-binned pixels)
+$endx			2047		// last X of ROI (un-binned pixels)
+$groupx			1			// binning along X for the ROI (un-binned pixels)
+$starty			0			// starting Y of ROI (un-binned pixels)
+$endy			2047		// last Y of ROI (un-binned pixels)
+$groupy			1			// binning along Y for the ROI (un-binned pixels)
+$exposure		1.9998			// exposure time (sec)
+$CCDshutterIN	1			// CCD shutter, 1=IN, 0=OUT
+$Xsample		5500.05		// sample position (micron)
+$Ysample		-4242.6
+$Zsample		-1979.8
+$scanNum		5133		// scan number
+$beamBad		0			// beam bad flag (TRUE==bad)
+$lightOn		0			// flag, TRUE=illuminator ON
+$energy			7.90876		// monochromator energy (keV)
+$hutchTemperature	24.6642	// hutch temperature (C)
+$sampleDistance	1.81e-05	// Keyence measure of sample posiiton (micron)
+$monoMode		white slitted	// monochromator mode or position
+$dateExposed	2009-03-01 23:45:08-0600
+$userName		Jon Tischler
+$title			Testing
+$sampleName		Si 4 micron
+$beamline		34ID-E
+$detector_ID	PE1621 723-3335
+//
+$boxsize		10			// box size used for peak fitting
+$minwidth		0.01		// min allowed width of a peak
+$maxwidth		20			// max allowed width of a peak
+$maxCentToFit	20			// max diff between initial & fitted peak position
+$maxRfactor		0.9			// max allowed R-factor
+$threshold		142.081		// threshold for blob searching
+$totalSum		5.88911e+07		// sum of all pixels in image
+$sumAboveThreshold	450255		// sum of all pixels in image above threshold
+$programName	./peaksearch
+$executionTime	3.11		// execution time (sec)
+//
+// fitted peak positions relative to the start of the ROI (not detector origin)
+//    peak positions are in zero based binned pixels
+$Npeaks		39				// number of fitted peaks in following table
+$peakList	5 39			// fitX fitY intens integral
+       18.333     1874.514        217.0000         1.50200
+       54.493     1088.467        525.0000         3.36100
+      187.441     1690.495       4101.0000        25.26200
+      199.361      494.335       4235.0000        23.59200
+      210.689     1088.871       2837.0000        14.62600
+      316.723     1089.429        401.0000         1.97700
+      381.320     1498.898        563.0000         2.63300
+      387.607      683.517        486.0000         3.20600
+      391.531       29.514       1524.0000        10.43100
+      393.570     1089.549        268.0000         1.80400
+      432.597     1983.453        221.0000         0.98300
+      490.594      340.456        230.0000         1.16800
+      880.531     1091.512       4112.0000        24.06100
+      902.419     1434.351        321.0000         1.65200
+      904.414      751.418        302.0000         1.30800
+      909.562     1487.295        561.0000         2.83700
+      911.830      699.439        624.0000         2.63500
+      921.502     1559.461       1879.0000        10.99700
+      924.120      628.430       2387.0000        11.39100
+      942.379     1664.266       6034.0000        30.45700
+      945.118      526.255       5816.0000        27.85900
+      983.450     1829.314        376.0000         1.47500
+      986.439      365.720        318.0000         1.92200
+     1021.142     1953.500       1062.0000         5.23300
+     1023.810      245.686       1037.0000         6.28700
+     1085.910       78.443        933.0000         4.57700
+     1426.448      763.165        714.0000         3.25200
+     1428.203     1426.634        673.0000         3.25300
+     1441.660     1093.798        914.0000         4.19300
+     1546.627     1094.455       1435.0000         7.24700
+     1561.360      389.580        596.0000         2.99300
+     1567.226     1809.587        543.0000         3.48200
+     1665.504      649.102       3436.0000        20.56100
+     1670.433     1545.061       3735.0000        20.54200
+     1701.434     1095.157       9451.0000        48.77600
+     1713.516      278.160       1431.0000         8.80200
+     1723.355     1926.513       1485.0000         8.73800
+     1951.542      123.815       1989.0000        13.79300
+     1953.127     1096.393      18663.0000       101.35000

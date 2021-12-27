@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<geoN xmlns="http://sector34.xray.aps.anl.gov/34ide/geoN">
+	<dateWritten>Tue, Mar 10, 2009</dateWritten>
+	<timeWritten>13:15:13 (-0500)</timeWritten>
+	<EPOCH start="midnight Jan 1, 1904" unit="sec">3415801202</EPOCH>
+	<fileNote>writen by 'writeGeoNToFile.tcl'</fileNote>
+
+	<Sample>
+		<Origin unit="micron">-5500 4384.6 1838.48</Origin>	<-- sample origin in raw PM500 units (micron) -->
+		<R unit="radian">0.006 -0.006 1.8e-5</R>
+	</Sample>
+
+	<Detectors Ndetectors="3">			<-- Ndetectors, number of detectors in use, must be <= MAX_Ndetectors -->
+		<Detector N="0">
+			<Npixels>2048 2048</Npixels>		<-- Nx,Ny is number of un-binned pixels in full detector -->
+			<size unit="mm">409.6 409.6</size>	<-- sizeX,sizeY otuside size of full detector -->
+			<R unit="radian">-1.2037299 -1.20900773 -1.21612354</R>		<-- Rotation and translation vector -->
+			<P unit="mm">23.644 -0.345 510.902</P>
+			<timeMeasured>Thu, Mar 5, 2009, 12:32:06 (-6)</timeMeasured>	<-- when this geometry was calculated -->
+			<note>Optimized using CalibrationList0</note>
+			<ID>PE1621 723-3335</ID>				<-- unique detector ID -->
+		</Detector>
+		<Detector N="1">
+			<Npixels>1024 1024</Npixels>
+			<size unit="mm">204.8 204.8</size>
+			<R unit="radian">-1.76735972 -0.73046931 -1.75766077</R>
+			<P unit="mm">-144.442 -0.631 412.866</P>
+			<timeMeasured>Sat, Dec 6, 2008, 22:55:53 (-6)</timeMeasured>
+			<note>Optimized using CalibrationListGe1</note>
+			<ID>PE0820 763-1807</ID>
+		</Detector>
+		<Detector N="2">
+			<Npixels>1024 1024</Npixels>
+			<size unit="mm">204.8 204.8</size>
+			<R unit="radian">-0.61994439 -1.49667816 -0.61039844</R>
+			<P unit="mm">187 0 400</P>
+			<timeMeasured>Dec 5, 2008</timeMeasured>
+			<note>generic values</note>
+			<ID>PE0820 763-1850</ID>
+		</Detector>
+	</Detectors>
+
+	<Wire>
+		<dia unit="micron">52</dia>
+		<Knife>0</Knife>				<-- true if wire on a knife edge, false for free-standing wire -->
+		<Origin unit="micron">1.96 -6068.55 -440.68</Origin>		<-- wire origin in raw PM500 frame (micron) -->
+		<R unit="radian">0.00449992 -0.015 -3.375e-5</R>
+		<Axis>1 0 0</Axis>		<-- unit vector along wire axis, usually close to (1,0,0) -->
+		<F unit="micron">3750</F>		<-- F of wire for a constant F wire scan (raw PM500 units) -->
+	</Wire>
+</geoN>

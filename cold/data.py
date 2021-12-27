@@ -179,10 +179,15 @@ def pack(data):
 
 
 def saveimg(path, vals, inds, shape, swap=False):
+    _vals = packandexpand(vals, inds, shape)
+    save(path, _vals, swap)
+
+
+def packandexpand(vals, inds, shape):
     _vals = pack(vals)
     _inds = pack(inds)
     _vals = expand(_vals, _inds, shape)
-    save(path, _vals, swap)
+    return _vals
 
 
 def saveplt(path, vals, grid):

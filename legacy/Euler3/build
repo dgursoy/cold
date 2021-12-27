@@ -1,7 +1,13 @@
-#gcc -std=gnu99 -Os -o euler -I/clhome/aps_tools/shared/include main.c fast.c optimize.c EulerTestFaster.c lattice.c mathUtil.c -L/clhome/aps_tools/shared/lib -lgsl -lgslcblas -lm -static
-
-gcc main.c fast.c optimize.c EulerTestFaster.c checkFileType.c lattice.c mathUtil.c \
-	-std=gnu99 -Os -o euler \
-	-I/clhome/aps_tools/shared/include \
-	-L/clhome/aps_tools/shared/lib \
-	-lgsl -lgslcblas -lm -static
+clang source/main.c \
+	source/fast.c \
+	source/optimize.c \
+	source/EulerTestFaster.c \
+	source/checkFileType.c \
+	source/lattice.c \
+	source/mathUtil.c \
+	-std=c99 -Os -o euler \
+	-Iinclude \
+  -I/Users/dgursoy/Software/anaconda3/envs/py10/include \
+  -L/Users/dgursoy/Software/anaconda3/envs/py10/lib \
+  -L/usr/lib \
+	-lgsl -lgslcblas -lm
