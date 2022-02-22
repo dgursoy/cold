@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import warnings
+warnings.filterwarnings('ignore')
 
 from cold.data import *
 from cold.mask import *

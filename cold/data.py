@@ -6,6 +6,8 @@ import re
 import os
 import yaml
 import logging
+import warnings
+warnings.filterwarnings('ignore')
 
 
 __author__ = "Doga Gursoy"
@@ -20,13 +22,34 @@ def config(path):
     return pars['file'], pars['geo'], pars['algo']
 
 
-def load(file, collapsed=True, partitioned=True):
+
+def loadsingle(file, id=0):
     """Loads Laue diffraction data."""
-    if file['type'] == 'stacked':
+    if file['stacked'] is True:
         files = loadstack(file)
-    if file['ext'] == 'h5':
-        values = loadh5files(files, file['h5']['key'])
-    index = cherrypickpixels(values, file['threshold'], file['frame'])
+        if file['ext'] == 'h5':
+            values = loadh5(files[id], file['h5']['key'])  
+    else:
+        if file['ext'] == 'h5':
+            values = loadh5(file['path'], file['h5']['key'])[id:id+1]
+    return values
+
+
+def load(file, collapsed=True, partitioned=True, index=None):
+    """Loads Laue diffraction data."""
+    if file['stacked'] is True:
+        files = loadstack(file)
+        if file['ext'] == 'h5':
+            values = loadh5files(files, file['h5']['key'])
+    else:
+        if file['ext'] == 'h5':
+            begin, end = file['range']
+            values = loadh5(file['path'], file['h5']['key'])[begin:end]
+            values = np.swapaxes(values, 0, 2)
+            values = np.swapaxes(values, 0, 1)
+            values = values.copy()
+    if index is None:
+        index = cherrypickpixels(values, file['threshold'], file['frame'])
     if collapsed is True:
         values = collapse(values, index)
     if partitioned is True:
@@ -197,15 +220,15 @@ def saveplt(path, vals, grid):
         os.makedirs(p)
     _vals = sum(vals)
     _grid = np.arange(*grid)
-    plt.figure()
+    plt.figure(figsize=[20, 5])
     plt.subplot(211)
-    plt.plot(_grid, _vals)
+    plt.step(_grid, _vals)
     plt.grid()
     plt.subplot(212)
     _vals[_vals < 1] = 0
-    plt.semilogy(_grid, _vals)
+    plt.semilogy(_grid, _vals, drawstyle='steps')
     plt.grid()
-    plt.xlabel('[mu]')
+    plt.xlabel('[mm]')
     plt.tight_layout()
     plt.savefig(path)
     plt.close()

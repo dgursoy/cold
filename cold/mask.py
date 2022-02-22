@@ -3,6 +3,8 @@
 import numpy as np
 from scipy import signal
 import logging
+import warnings
+warnings.filterwarnings('ignore')
 
 
 __author__ = "Doga Gursoy"
@@ -15,12 +17,12 @@ def mask(mask):
     """Returns a mask."""
     grid = creategrid(mask)
     vals = gridvals(mask, grid)
-    vals, grid = padmask(mask, vals, mask['pad'])
+    vals, grid = padmask(mask, vals, mask['pad'] / mask['resolution'])
     return vals
 
 
 def padmask(mask, vals, pad):
-    vals = np.pad(vals, pad)
+    vals = np.pad(vals, int(pad))
     padlen = 2 * pad * mask['resolution']
     totlen = masklength(mask) + padlen
     grid = np.arange(0, totlen, mask['resolution'])
@@ -42,13 +44,13 @@ def masklength(mask):
     return length
 
 
-def plotmask(mask, grid):
+def plotmask(mask):
     """Plots the mask on a given grid."""
     import matplotlib.pyplot as plt
     plt.figure(figsize=(16, 1.5))
     plt.xlabel("Length [mu]")
     plt.ylabel("Mask")
-    plt.plot(grid, mask)
+    plt.plot(mask)
     plt.grid(True)
     plt.tight_layout()
     plt.show()
@@ -78,7 +80,7 @@ def gridvals(mask, grid):
     if mask['widening'] > 0:
         vals = widen(mask, vals)
     if mask['smoothness'] > 0:
-        vals = smooth(mask, vals)
+        vals = smooth(mask, vals, mask['alpha'])
     return vals
 
 
@@ -87,14 +89,14 @@ def widen(mask, vals):
     kernel = signal.tukey(size, alpha=0.0)
     kernel /= kernel.sum()
     vals = signal.convolve(vals, kernel, 'same')
-    vals[vals > 0] = 1
+    vals[vals > 1e-6] = 1
     logging.info("Mask widened.")
     return vals
 
 
-def smooth(mask, vals):
+def smooth(mask, vals, alpha):
     size = int(mask['smoothness'] / mask['resolution'])
-    kernel = signal.tukey(size, alpha=1.0)
+    kernel = signal.tukey(size, alpha=alpha)
     kernel /= kernel.sum()
     vals = signal.convolve(vals, kernel, 'same')
     logging.info("Mask smoothed.")
