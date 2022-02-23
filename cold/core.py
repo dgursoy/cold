@@ -100,6 +100,93 @@ def ipos(file, mask, geo, algo, threshold=1000):
     return pos0
 
 
+def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
+
+    # Number pf processes
+    chunks = len(data)
+
+    # Number of total pixels
+    npix = 0
+    for item in data:
+        npix += item.shape[0]
+
+    scales = initscales(ind, geo, chunks)
+    mask = initmask(mask)
+    sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
+    pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
+    bases = initbases(algo, sig)
+
+    if algo['server'] == 'local':
+
+        # Pack arguments as list and run
+        args = packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks)
+        results = runpar(_decode, args, chunks)
+
+        # Unpack results and rescale them
+        for m in range(chunks):
+            pos[m] = results[m][0]
+            sig[m] = results[m][1]
+
+    if algo['server'] == 'remote':
+
+        # for m in range(chunks):
+        #     print (m, chunks)
+        #     pos[m], sig[m] = pixrecon(data[m], mask, pos[m], sig[m], 
+        #             scales[m], algo, pos0[m], lamda, bases)
+
+        from funcx.sdk.client import FuncXClient
+        import time
+
+        fxc = FuncXClient()
+        fxc.version_check()
+
+        ep_info = fxc.get_endpoint_status(algo['functionid'])
+        if ep_info['status'] != 'online': 
+            raise RuntimeError("End point is not online!")
+
+        pixrecon_fid = fxc.register_function(pixrecon, description=f"Decoder.")
+
+        # Create a batch of pi function tasks
+        pixrecon_batch = fxc.create_batch()
+        for m in range(chunks):
+            pixrecon_batch.add(
+                data[m], mask, pos[m], sig[m], 
+                scales[m], algo, pos0[m], lamda, bases, 
+                endpoint_id=algo['functionid'], function_id=pixrecon_fid)
+
+        batch_task_ids = fxc.batch_run(pixrecon_batch)
+        counter = 0
+        while True: 
+            batch_task_status = fxc.get_batch_result(batch_task_ids)
+            finished_tasks = [ s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+            for task in finished_tasks: print(f"Finished task: {task}: {batch_task_status[task]}")
+            running_tasks = [ s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+            if not running_tasks: break
+            else: 
+                print(f"Total exec. time (sec): {counter}; Tasks are still running: {running_tasks}")
+            time.sleep(1) # Wait 2 secs before checking the results
+            counter += 1
+
+        # Unpack results and rescale them
+        for m, task in zip(range(chunks), finished_tasks): 
+            pos[m] = batch_task_status[task]['result'][0]
+            sig[m] = batch_task_status[task]['result'][1]
+         
+    return pos, sig, scales, pos0
+
+def initbases(algo, sig):
+    bases = baseskernel(sig[0].shape[1], 
+                algo['sig']['order'], 
+                algo['sig']['scale'])
+    return bases
+
+def initscales(ind, geo, chunks):
+    args = packscaleargs(ind, geo, chunks)
+    scales = runpar(_getscales, args, chunks)
+    return scales
+
+
+
 def decode(data, ind, mask, geo, algo, pos0=None):
     """Decodes the position and pixel footprints and their positions
     on the mask using coded measurement data."""
@@ -200,10 +287,17 @@ def initmask(mask):
     return invert(mask)
 
 
-def initpos(chunks, npix):
+def initpos(chunks, npix, ind, pos0=None):
     pos = np.array(0, dtype='float32')
     pos = np.zeros((npix, ), dtype='float32')
-    return partition(pos, chunks)
+    pos = partition(pos, chunks)
+    if pos0 is None:
+        pos0 = pos
+        lamda = 0
+    else:
+        pos0 = collapse(pos0, pack(ind))
+        pos0 = partition(pos0, 8)
+    return pos, pos0, lamda
 
 
 def initsig(algo, chunks, npix, factor):
@@ -217,11 +311,12 @@ def initsig(algo, chunks, npix, factor):
     return partition(sig, chunks)
 
 
-def packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, chunks):
+def packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks):
     mask = [mask] * chunks
     algo = [algo] * chunks
     lamda = [lamda] * chunks
-    return [data, mask, pos, sig, scales, pos0, lamda, algo]
+    bases = [bases] * chunks
+    return [data, mask, pos, sig, scales, pos0, lamda, algo, bases]
 
 
 def unpackdecodeargs(args):
@@ -233,7 +328,8 @@ def unpackdecodeargs(args):
     pos0 = args[5]
     lamda = args[6]
     algo = args[7]
-    return data, mask, pos, sig, scales, pos0, lamda, algo
+    bases = args[8]
+    return data, mask, pos, sig, scales, pos0, lamda, algo, bases
 
 
 def stretchfactor(resolution, step):
@@ -242,13 +338,8 @@ def stretchfactor(resolution, step):
 
 
 def _decode(args):
-    data, mask, pos, sig, scales, pos0, lamda, algo = unpackdecodeargs(args)
+    data, mask, pos, sig, scales, pos0, lamda, algo, bases = unpackdecodeargs(args)
     npix = data.shape[0]
-
-    dat = np.zeros((npix, data.shape[1] * 2))
-    bases = baseskernel(sig.shape[1], 
-        algo['sig']['order'], 
-        algo['sig']['scale'])
 
     for m in range(npix):
         pos[m], sig[m] = pixdecode(
@@ -263,14 +354,78 @@ def _decode(args):
 def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
     """The main function for decoding pixel data."""
     data = normalize(data)
-    for m in range(algo['iter']):
-        pos = posrecon(data, mask, pos, sig, scale, algo, pos0, lamda)
-        sig = sigrecon(data, mask, pos, sig, scale, algo, bases)
+    data = ndimage.zoom(data, scale, order=1)
+    pos = posrecon(data, mask, pos, sig, algo, pos0, lamda)
+    sig = sigrecon(data, mask, pos, sig, algo, bases)
     return pos, sig
 
 
-def posrecon(data, mask, pos, sig, scale, algo, pos0, lamda):
-    data = ndimage.zoom(data, scale, order=1)
+# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
+#     from scipy import signal, ndimage, optimize, linalg
+#     import numpy as np
+#     import cold
+#     npix = data.shape[0]
+
+#     for p in range(npix):
+#         _data = data[p]
+#         _data = cold.normalize(_data)
+#         _sig = sig[p]
+#         _data = ndimage.zoom(_data, scale[p], order=1)
+
+#         # position recon
+#         sim = signal.convolve(mask, _sig, 'same')
+#         costsize = sim.size - _data.size
+#         cost = np.zeros((costsize), dtype='float32')
+#         for m in range(costsize):
+#             if algo['pos']['method'] == 'lsqr':
+#                 cost[m] = np.sum(np.power(sim[m:m+_data.size] - _data, 2)) + lamda * np.sum(np.power(m - pos0[p], 2))
+#         try:
+#             _pos = np.where(cost.min() == cost)[0][0]
+#         except IndexError:
+#             pass
+
+#         # signal recon
+#         first = int((_sig.size - 1) / 2)
+#         last = int(mask.size + first - _sig.size - _data.size)
+#         if _pos > first and _pos < last:
+#             kernel = np.zeros((_data.size, _sig.size), dtype='float32')
+#             for m in range(_data.size):
+#                 begin = _pos - first + m - 1
+#                 end =  begin + _sig.size
+#                 kernel[m] = mask[begin:end]
+#             if algo['sig']['method'] == 'splines':
+#                 coefs = optimize.nnls(np.dot(kernel, bases), _data)[0][::-1]
+#                 _sig = np.dot(bases, coefs)
+#             if algo['sig']['method'] == 'nnls':
+#                 _sig = optimize.nnls(kernel, _data)[0][::-1]
+#             if algo['sig']['method'] == 'pinv':
+#                 ikernel = linalg.pinv(kernel, algo['sig']['init']['atol'])
+#                 _sig = np.dot(ikernel, _data)[::-1]
+#             _sig /= _sig.sum()
+#         else:
+#             _sig *= 0
+
+#         pos[p] = _pos
+#         sig[p] = _sig
+
+#     return pos, sig
+
+
+
+def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
+    import cold
+    from scipy import ndimage
+
+    for m in range(data.shape[0]):
+        _data = cold.normalize(data[m])
+        _data = ndimage.zoom(_data, scale[m], order=1)
+        pos[m] = cold.posrecon(_data, mask, pos[m], sig[m], algo, pos0[m], lamda)
+        sig[m] = cold.sigrecon(_data, mask, pos[m], sig[m], algo, bases)
+
+    return pos, sig
+
+
+def posrecon(data, mask, pos, sig, algo, pos0, lamda):
     sim = signal.convolve(mask, sig, 'same')
     costsize = sim.size - data.size
     cost = np.zeros((costsize), dtype='float32')
@@ -284,8 +439,7 @@ def posrecon(data, mask, pos, sig, scale, algo, pos0, lamda):
     return pos
 
 
-def sigrecon(data, mask, pos, sig, scale, algo, bases):
-    data = ndimage.zoom(data, scale, order=1)
+def sigrecon(data, mask, pos, sig, algo, bases):
     first = int((sig.size - 1) / 2)
     last = int(mask.size + first - sig.size - data.size)
     if pos > first and pos < last:
@@ -506,7 +660,7 @@ def _calibrate(args):
     return depth
 
 
-def resolve(data, ind, pos, sig, shift, geo):
+def resolve(data, ind, pos, sig, geo, shift=0):
     """Resolves depth information."""
     # Number pf processes
     chunks = len(data)
