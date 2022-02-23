@@ -355,7 +355,7 @@ def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
     """The main function for decoding pixel data."""
     data = normalize(data)
     data = ndimage.zoom(data, scale, order=1)
-    pos = posrecon(data, mask, pos, sig, algo, pos0, lamda)
+    pos = posrecon(data, mask, sig, algo, pos0, lamda)
     sig = sigrecon(data, mask, pos, sig, algo, bases)
     return pos, sig
 
@@ -364,13 +364,12 @@ def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
 #     from scipy import signal, ndimage, optimize, linalg
 #     import numpy as np
 #     import cold
-#     npix = data.shape[0]
 
-#     for p in range(npix):
+#     for p in range(data.shape[0]):
 #         _data = data[p]
 #         _data = cold.normalize(_data)
-#         _sig = sig[p]
 #         _data = ndimage.zoom(_data, scale[p], order=1)
+#         _sig = sig[p]
 
 #         # position recon
 #         sim = signal.convolve(mask, _sig, 'same')
@@ -415,17 +414,18 @@ def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
 def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
     import cold
     from scipy import ndimage
-
     for m in range(data.shape[0]):
         _data = cold.normalize(data[m])
         _data = ndimage.zoom(_data, scale[m], order=1)
-        pos[m] = cold.posrecon(_data, mask, pos[m], sig[m], algo, pos0[m], lamda)
-        sig[m] = cold.sigrecon(_data, mask, pos[m], sig[m], algo, bases)
-
+        _sig = sig[m]
+        _pos = cold.posrecon(_data, mask, _sig, algo, pos0[m], lamda)
+        _sig = cold.sigrecon(_data, mask, _pos, _sig, algo, bases)
+        pos[m] = _pos
+        sig[m] = _sig
     return pos, sig
 
 
-def posrecon(data, mask, pos, sig, algo, pos0, lamda):
+def posrecon(data, mask, sig, algo, pos0, lamda):
     sim = signal.convolve(mask, sig, 'same')
     costsize = sim.size - data.size
     cost = np.zeros((costsize), dtype='float32')
