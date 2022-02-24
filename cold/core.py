@@ -4,12 +4,11 @@
 import numpy as np
 import logging
 from skimage import restoration
-from scipy import signal, ndimage, optimize, linalg, interpolate
+from scipy import signal, ndimage, optimize, interpolate
 from scipy.interpolate import BSpline
-from cold import pack, saveplt, partition, smooth, collapse, loadsingle, load, saveimg
+from cold import pack, partition, smooth, loadsingle, load, collapse
 from skimage.feature import blob_log
 import multiprocessing
-import os
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -17,6 +16,213 @@ __author__ = "Doga Gursoy"
 __copyright__ = "Copyright (c) 2021, UChicago Argonne, LLC."
 __docformat__ = 'restructuredtext en'
 
+
+
+
+
+def decode(data, ind, mask, comp, geo, algo):
+    """Decodes the position and pixel footprints and their positions
+    on the mask using coded measurement data."""
+
+    # Initialize mask
+    mask = invert(mask)
+    logging.info('Initialized: Mask')
+
+    # Initialize pos
+    pos = np.zeros((data.shape[0], ), dtype='float32')
+    logging.info('Initialized: Positions')
+
+    # Initialize sig
+    maxsize = algo['sig']['init']['maxsize']
+    avgsize = algo['sig']['init']['avgsize']
+    sig = np.zeros(maxsize, dtype='float32')
+    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+    window = signal.windows.hann(int(avgsize))
+    window /= sum(window)
+    sig[first:first+avgsize] = window
+    factor = 1 / geo['mask']['resolution']
+    sig = stretcharr(sig, factor)
+    sig = np.tile(sig, (data.shape[0], 1))
+    logging.info('Initialized: Signal')
+
+    # Initialize scl
+    factor = geo['scanner']['step'] / geo['mask']['resolution']
+    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
+    weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
+    weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
+    sclscan = np.ones((ind.shape[0], ), dtype='float32')
+    for m in range(ind.shape[0]):
+        p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
+        alpha = np.arctan2(p0[0], p0[1]) #+25
+        sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
+    scl = weighty * weightz * factor * geo['scanner']['step'] * sclscan
+    logging.info('Initialized: Scales')
+
+    # Initialize bases
+    size = sig.shape[1]
+    order = algo['sig']['order']
+    scale = algo['sig']['scale']
+    grid = np.arange(0, size + 1, dtype='int')
+    knots = np.arange(0, size + 1, scale, dtype='int')
+    ncoefs = knots.size - order - 1
+    base = np.zeros((size, ncoefs))
+    for m in range(ncoefs):
+        t = knots[m:m + order + 2] # knots
+        b = BSpline.basis_element(t)
+        inc = knots[m]
+        while knots[m + order + 1] > inc:
+            base[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+            inc += 1
+    logging.info('Initialized: Spline bases')
+
+    # Partitioning
+    ind = partition(ind, comp['workers'])
+    pos = partition(pos, comp['workers'])
+    sig = partition(sig, comp['workers'])
+    scl = partition(scl, comp['workers'])
+    data = partition(data, comp['workers'])
+    datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
+    logging.info(
+        "Data partitioned: " +
+        "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
+            comp['workers'], 
+            data[0].shape, 
+            datasize,
+            datasize * comp['workers'] * 1e-3))
+    logging.info('Partitioning completed')
+
+    if comp['server'] == 'local':
+        # Pack arguments as list and run   
+        mask = [mask] * comp['workers']
+        algo = [algo] * comp['workers']
+        base = [base] * comp['workers']
+
+        args = [data, mask, pos, sig, scl, algo, base]
+        results = runpar(_decode, args, comp['workers'])
+
+        # Unpack results and rescale them
+        for m in range(comp['workers']):
+            pos[m] = results[m][0]
+            sig[m] = results[m][1]
+        
+    elif comp['server'] == 'remote':
+        from funcx.sdk.client import FuncXClient
+        import time
+
+        fxc = FuncXClient()
+        fxc.version_check()
+        ep_info = fxc.get_endpoint_status(comp['functionid'])
+        if ep_info['status'] != 'online': 
+            raise RuntimeError("End point is not online!")
+        fid = fxc.register_function(_decode, description=f"Decoder.")
+
+        # Create a batch function tasks
+        job = fxc.create_batch()
+        for m in range(comp['workers']):
+            args = [data[m], mask, pos[m], sig[m], scl[m], algo, base]
+            job.add(args, endpoint_id=comp['functionid'], function_id=fid)
+
+        # Run the batch function tasks
+        batch_task_ids = fxc.batch_run(job)
+
+        # Info
+        counter = 0
+        while True: 
+            batch_task_status = fxc.get_batch_result(batch_task_ids)
+            finished_tasks = [s for s in batch_task_status 
+                if batch_task_status[s]['status'] == 'success']
+            running_tasks = [s for s in batch_task_status 
+                if batch_task_status[s]['status'] != 'success']
+            if not running_tasks: break
+            else: 
+                logging.info(
+                    f"Total exec. time (sec): {counter};" +
+                    "Tasks are still running: " + 
+                    f"{len(finished_tasks)} / {len(running_tasks)}")
+            time.sleep(10) # Wait 2 secs before checking the results
+            counter += 10
+
+        # Unpack results and rescale them
+        for m, task in zip(range(comp['workers']), finished_tasks): 
+            pos[m] = batch_task_status[task]['result'][0]
+            sig[m] = batch_task_status[task]['result'][1]
+
+    return pack(pos), pack(sig)
+
+
+def _decode(args):
+    data = args[0]
+    mask = args[1]
+    pos = args[2]
+    sig = args[3]
+    scl = args[4]
+    algo = args[5]
+    base = args[6]
+
+    from cold import pixdecode
+    import logging
+    for m in range(data.shape[0]):
+        pos[m], sig[m] = pixdecode(
+            data[m], mask, pos[m], sig[m], scl[m], algo, base)
+        logging.info('Pixel decoded: ' +
+            str(m) + '/' + str(data.shape[0] - 1) + 
+            ' pos=' + str(pos[m].squeeze()) + 
+            ' scales=' + str(scl[m].squeeze()))
+    return pos, sig
+
+
+def pixdecode(data, mask, pos, sig, scale, algo, bases):
+    """The main function for decoding pixel data."""
+    data = normalize(data)
+    data = ndimage.zoom(data, scale, order=1)
+    pos = posrecon(data, mask, pos, sig, algo)
+    sig = sigrecon(data, mask, pos, sig, algo, bases)
+    return pos, sig
+
+
+def posrecon(data, mask, pos, sig, algo):
+    sim = signal.convolve(mask, sig, 'same')
+    costsize = sim.size - data.size
+    cost = np.zeros((costsize), dtype='float32')
+    for m in range(costsize):
+        if algo['pos']['method'] == 'lsqr':
+            cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
+                algo['pos']['regpar'] * np.sum(np.power(m - pos, 2)))
+    try:
+        pos = np.where(cost.min() == cost)[0][0]
+    except IndexError:
+        pass
+    return pos
+
+
+def sigrecon(data, mask, pos, sig, algo, base):
+    first = int((sig.size - 1) / 2)
+    last = int(mask.size + first - sig.size - data.size)
+    if pos > first and pos < last:
+        kernel = np.zeros((data.size, sig.size), dtype='float32')
+        for m in range(data.size):
+            begin = pos - first + m - 1
+            end =  begin + sig.size
+            kernel[m] = mask[begin:end]
+        if algo['sig']['method'] == 'splines':
+            coefs = optimize.nnls(np.dot(kernel, base), data)[0][::-1]
+            sig = np.dot(base, coefs)
+            sig /= sig.sum()
+    else:
+        sig *= 0
+    return sig
+
+
+def normalize(data):
+    data = data.copy()
+    diff = max(data) - min(data)
+    stdmin = 2 * np.sqrt(min(data))
+    if stdmin > diff * 0.5:
+        stdmin = 0
+    data = data - (min(data) + stdmin)
+    stdmax = 2 * np.sqrt(max(data))
+    data = data / (max(data) - stdmax)
+    return data
 
 
 def smooth(img, sigma):
@@ -99,325 +305,26 @@ def ipos(file, mask, geo, algo, threshold=1000):
     return pos0
 
 
-
-
-
-
-
-
-
-def remoterec(data, ind, mask, geo, algo):
-
-    # Number pf chunks
-    chunks = len(data)
-
-    # Initialize mask
-    mask = invert(mask)
-
-    # Number of total pixels
-    npix = 0
-    for item in data:
-        npix += item.shape[0]
-
-    # Initialize pos
-    pos = np.zeros((npix, ), dtype='float32')
-    pos = partition(pos, chunks)
-    
-    # Initialize sig
-    maxsize = algo['sig']['init']['maxsize']
-    avgsize = algo['sig']['init']['avgsize']
-    sig = np.zeros(maxsize, dtype='float32')
-    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
-    window = signal.windows.hann(int(avgsize))
-    window /= sum(window)
-    sig[first:first+avgsize] = window
-    factor = 1 / geo['mask']['resolution']
-    sig = stretcharr(sig, factor)
-    sig = np.tile(sig, (npix, 1))
-    sig = partition(sig, chunks)
-
-    # Initialize bases
-    size = sig.shape[1]
-    order = algo['sig']['order']
-    scale = algo['sig']['scale']
-    grid = np.arange(0, size + 1, dtype='int')
-    knots = np.arange(0, size + 1, scale, dtype='int')
-    ncoefs = knots.size - order - 1
-    base = np.zeros((size, ncoefs))
-    for m in range(ncoefs):
-        t = knots[m:m + order + 2] # knots
-        b = BSpline.basis_element(t)
-        inc = knots[m]
-        while knots[m + order + 1] > inc:
-            base[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-            inc += 1
-
-    # Initialize scl
-    scl = []
-    factor = geo['scanner']['step'] / geo['mask']['resolution']
-    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-    weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-    weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-    for n in range(chunks):
-        sclscan = np.ones((ind[n].shape[0], ), dtype='float32')
-        for m in range(ind[n].shape[0]):
-            p0 = pix2pos(ind[n][m], geo) # [<->, dis2det, v^]
-            alpha = np.arctan2(p0[0], p0[1]) #+25
-            sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-        scl.append(weighty * weightz * factor * geo['scanner']['step'] * sclscan)
-
-    if algo['server'] == 'local':
-        # Pack arguments as list and run
-        mask = [mask] * chunks
-        algo = [algo] * chunks
-        base = [base] * chunks
-        args = [data, mask, algo, pos, sig, scl, base]
-        results = runpar(_decode, args, chunks)
-
-        # Unpack results and rescale them
-        for m in range(chunks):
-            pos[m] = results[m][0]
-            sig[m] = results[m][1]
-
-    if algo['server'] == 'remote':
-        from funcx.sdk.client import FuncXClient
-        import time
-
-        fxc = FuncXClient()
-        fxc.version_check()
-
-        ep_info = fxc.get_endpoint_status(algo['functionid'])
-        if ep_info['status'] != 'online': 
-            raise RuntimeError("End point is not online!")
-
-        fid = fxc.register_function(_remoterec, description=f"Decoder.")
-
-        # Create a batch function tasks
-        job = fxc.create_batch()
-        for m in range(chunks):
-            job.add(
-                data[m], mask, algo, pos[m], sig[m], scl[m], base,
-                endpoint_id=algo['functionid'], function_id=fid)
-
-        batch_task_ids = fxc.batch_run(job)
-        counter = 0
-        while True: 
-            batch_task_status = fxc.get_batch_result(batch_task_ids)
-            finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-            running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
-            if not running_tasks: break
-            else: 
-                print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
-            time.sleep(10) # Wait 2 secs before checking the results
-            counter += 10
-
-        # Unpack results and rescale them
-        for m, task in zip(range(chunks), finished_tasks): 
-            pos[m] = batch_task_status[task]['result'][0]
-            sig[m] = batch_task_status[task]['result'][1]
-            print(batch_task_status[task]['result'][2])
-
-    return pos, sig
-
-
-def _remoterec(data, mask, algo, pos, sig, scl, base):
-    import cold
-    import time
-    from scipy import ndimage
-    t = time.time()
-    for m in range(data.shape[0]):
-        _data = cold.normalize(data[m])
-        _data = ndimage.zoom(_data, scl[m], order=1)
-        _pos = cold.posrecon(_data, mask, pos[m], sig[m], algo)
-        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, base)
-        pos[m] = _pos
-        sig[m] = _sig
-    elapsedtime = time.time() - t
-    return pos, sig, elapsedtime
-
-
-
-
-def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
-    import cold
-    import time
-    from scipy import ndimage
-    t = time.time()
-    for m in range(data.shape[0]):
-        _data = cold.normalize(data[m])
-        _data = ndimage.zoom(_data, scale[m], order=1)
-        _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
-        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
-        pos[m] = _pos
-        sig[m] = _sig
-    elapsedtime = time.time() - t
-    return pos, sig, elapsedtime
-
-
-
-
-def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
-
-    # Number pf processes
-    chunks = len(data)
-
-    # Number of total pixels
-    npix = 0
-    for item in data:
-        npix += item.shape[0]
-
-    scales = initscales(ind, geo, chunks)
-    mask = initmask(mask)
-    sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
-    pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
-    bases = initbases(algo, sig)
-
-    if algo['server'] == 'local':
-
-        # Pack arguments as list and run
-        args = packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks)
-        results = runpar(_decode, args, chunks)
-
-        # Unpack results and rescale them
-        for m in range(chunks):
-            pos[m] = results[m][0]
-            sig[m] = results[m][1]
-
-    if algo['server'] == 'remote':
-
-        from funcx.sdk.client import FuncXClient
-        import time
-
-        fxc = FuncXClient()
-        fxc.version_check()
-
-        ep_info = fxc.get_endpoint_status(algo['functionid'])
-        if ep_info['status'] != 'online': 
-            raise RuntimeError("End point is not online!")
-
-        pixrecon_fid = fxc.register_function(pixrecon, description=f"Decoder.")
-
-        # Create a batch of pi function tasks
-        pixrecon_batch = fxc.create_batch()
-        for m in range(chunks):
-            pixrecon_batch.add(
-                data[m], mask, pos[m], sig[m], 
-                scales[m], algo, pos0[m], lamda, bases, 
-                endpoint_id=algo['functionid'], function_id=pixrecon_fid)
-
-        batch_task_ids = fxc.batch_run(pixrecon_batch)
-        counter = 0
-        while True: 
-            batch_task_status = fxc.get_batch_result(batch_task_ids)
-            finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-            running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
-            if not running_tasks: break
-            else: 
-                print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
-            time.sleep(10) # Wait 2 secs before checking the results
-            counter += 10
-
-        # Unpack results and rescale them
-        for m, task in zip(range(chunks), finished_tasks): 
-            pos[m] = batch_task_status[task]['result'][0]
-            sig[m] = batch_task_status[task]['result'][1]
-            print(batch_task_status[task]['result'][2])
-         
-    return pos, sig, scales, pos0
-
-def initbases(algo, sig):
-    bases = baseskernel(sig[0].shape[1], 
-                algo['sig']['order'], 
-                algo['sig']['scale'])
-    return bases
-
-def initscales(ind, geo, chunks):
-    args = packscaleargs(ind, geo, chunks)
-    scales = runpar(_getscales, args, chunks)
-    return scales
-
-
-
-def decode(data, ind, mask, geo, algo, pos0=None):
-    """Decodes the position and pixel footprints and their positions
-    on the mask using coded measurement data."""
-
-    # Number pf processes
-    chunks = len(data)
-
-    # Number of total pixels
-    npix = 0
-    for item in data:
-        npix += item.shape[0]
-
-    # Initialize scalings
-    args = packscaleargs(ind, geo, chunks)
-    scales = runpar(_getscales, args, chunks)
-
-    # Initialize parameters
-    mask = initmask(mask)
-    sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
-
-    # Initial position
-    pos = initpos(chunks, npix)
-    if pos0 is None:
-        pos0 = pos
-        lamda = 0
-    else:
-        pos0 = collapse(pos0, pack(ind))
-        pos0 = partition(pos0, 8)
-        lamda = 1e-5
-
-    # Pack arguments as list and run
-    args = packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, chunks)
-    results = runpar(_decode, args, chunks)
-
-    # Unpack results and rescale them
-    for m in range(chunks):
-        pos[m] = results[m][0]
-        sig[m] = results[m][1]
-    return pos, sig, scales, pos0
-
-
-def packscaleargs(ind, geo, chunks):
-    geo = [geo] * chunks
-    return [ind, geo]
-
-
-def unpackscaleargs(args):
-    ind = args[0]
-    geo = args[1]
-    return ind, geo
-
-
-def _getscales(args):
-    ind, geo = unpackscaleargs(args)
-    # Scaling factor
-    factor = stretchfactor(
-        geo['mask']['resolution'], 
-        geo['scanner']['step'])
-        
-    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-    scalesscan = np.ones((ind.shape[0], ), dtype='float32')
-    for m in range(ind.shape[0]):
-        p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
-        alpha = np.arctan2(p0[0], p0[1]) #+25
-        scalesscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-
-    weight = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-    scalesy = weight * np.ones((ind.shape[0], ), dtype='float32')
-
-    weight = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-    scalesz = weight * np.ones((ind.shape[0], ), dtype='float32')
-    return scalesy * scalesz * scalesscan * factor * geo['scanner']['step']
-
-
-def stretchlist(data, scales):
-    data = data.copy()
-    chunks = len(data)
-    for m in range(chunks):
-        data[m] = stretcharr(data[m], scales)
-    return data
+def invert(mask):
+    return np.abs(mask.copy() - 1)
+
+
+def stackargs(args, nproc):
+    argstack = []
+    for m in range(nproc):
+        inputs = []
+        for arg in args:
+            inputs.append(arg[m])
+        argstack.append(inputs)
+    return argstack
+
+
+def runpar(myfunc, args, nproc):
+    pool = multiprocessing.Pool(processes=nproc)
+    results = pool.map(myfunc, stackargs(args, nproc))
+    pool.close()
+    pool.join()
+    return results
 
 
 def stretcharr(arr, factor, order=1):
@@ -428,86 +335,429 @@ def stretcharr(arr, factor, order=1):
         zoom = factor
     arr = ndimage.zoom(arr, zoom, order=order)
     return arr / factor
-        
+
+
+# def decode(data, ind, mask, geo, algo):
+
+#     # Number pf chunks
+#     chunks = len(data)
+
+#     # Initialize mask
+#     mask = invert(mask)
+
+#     # Number of total pixels
+#     npix = 0
+#     for item in data:
+#         npix += item.shape[0]
+
+#     # Initialize pos
+#     pos = np.zeros((npix, ), dtype='float32')
+#     pos = partition(pos, chunks)
+#     logging.info('Initialized: Positions')
     
-def initdata(data, scales):
-    return stretchlist(data, scales)
+#     # Initialize sig
+#     maxsize = algo['sig']['init']['maxsize']
+#     avgsize = algo['sig']['init']['avgsize']
+#     sig = np.zeros(maxsize, dtype='float32')
+#     first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+#     window = signal.windows.hann(int(avgsize))
+#     window /= sum(window)
+#     sig[first:first+avgsize] = window
+#     factor = 1 / geo['mask']['resolution']
+#     sig = stretcharr(sig, factor)
+#     sig = np.tile(sig, (npix, 1))
+#     sig = partition(sig, chunks)
+#     logging.info('Initialized: Signal')
+
+#     # Initialize bases
+#     size = sig[0].size
+#     order = algo['sig']['order']
+#     scale = algo['sig']['scale']
+#     grid = np.arange(0, size + 1, dtype='int')
+#     knots = np.arange(0, size + 1, scale, dtype='int')
+#     ncoefs = knots.size - order - 1
+#     base = np.zeros((size, ncoefs))
+#     for m in range(ncoefs):
+#         t = knots[m:m + order + 2] # knots
+#         b = BSpline.basis_element(t)
+#         inc = knots[m]
+#         while knots[m + order + 1] > inc:
+#             base[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+#             inc += 1
+#     logging.info('Initialized: Spline bases')
+
+#     # Initialize scl
+#     scl = []
+#     factor = geo['scanner']['step'] / geo['mask']['resolution']
+#     beta = (90 - geo['scanner']['angle']) * np.pi / 180 
+#     weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
+#     weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
+#     for n in range(chunks):
+#         sclscan = np.ones((ind[n].shape[0], ), dtype='float32')
+#         for m in range(ind[n].shape[0]):
+#             p0 = pix2pos(ind[n][m], geo) # [<->, dis2det, v^]
+#             alpha = np.arctan2(p0[0], p0[1]) #+25
+#             sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
+#         scl.append(weighty * weightz * factor * geo['scanner']['step'] * sclscan)
+#     logging.info('Initialized: Scales')
+
+#     if algo['server'] == 'local':
+#         # Pack arguments as list and run
+#         mask = [mask] * chunks
+#         algo = [algo] * chunks
+#         base = [base] * chunks
+#         args = [data, mask, algo, pos, sig, scl, base]
+#         results = runpar(_decode, args, chunks)
+
+#         # Unpack results and rescale them
+#         for m in range(chunks):
+#             pos[m] = results[m][0]
+#             sig[m] = results[m][1]
+
+#     # if algo['server'] == 'remote':
+#     #     from funcx.sdk.client import FuncXClient
+#     #     import time
+
+#     #     fxc = FuncXClient()
+#     #     fxc.version_check()
+
+#     #     ep_info = fxc.get_endpoint_status(algo['functionid'])
+#     #     if ep_info['status'] != 'online': 
+#     #         raise RuntimeError("End point is not online!")
+
+#     #     fid = fxc.register_function(_decode, description=f"Decoder.")
+
+#     #     # Create a batch function tasks
+#     #     job = fxc.create_batch()
+#     #     for m in range(chunks):
+#     #         args = [data[m], mask, algo, pos[m], sig[m], scl[m], base]
+#     #         job.add(args, endpoint_id=algo['functionid'], function_id=fid)
+
+#     #     batch_task_ids = fxc.batch_run(job)
+#     #     counter = 0
+#     #     while True: 
+#     #         batch_task_status = fxc.get_batch_result(batch_task_ids)
+#     #         finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+#     #         running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+#     #         if not running_tasks: break
+#     #         else: 
+#     #             print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
+#     #         time.sleep(10) # Wait 2 secs before checking the results
+#     #         counter += 10
+
+#     #     # Unpack results and rescale them
+#     #     for m, task in zip(range(chunks), finished_tasks): 
+#     #         pos[m] = batch_task_status[task]['result'][0]
+#     #         sig[m] = batch_task_status[task]['result'][1]
+#     #         print(batch_task_status[task]['result'][2])
+
+#     return pos, sig
 
 
-def initmask(mask):
-    return invert(mask)
+# def _decode(args):
+#     data = args[0]
+#     mask = args[1]
+#     algo = args[2]
+#     pos = args[3]
+#     sig = args[4]
+#     scl = args[5]
+#     base = args[6]
+
+#     for m in range(data.shape[0]):
+#         _data = normalize(data[m])
+#         _data = ndimage.zoom(_data, scl[m], order=1)
+#         pos[m] = posrecon(_data, mask, pos[m], sig[m], algo)
+#         sig[m] = sigrecon(_data, mask, pos[m], sig[m], algo, base)
+#         logging.info('Pixel decoded: ' +
+#             str(m) + '/' + str(data.shape[0] - 1) + 
+#             ' pos=' + str(pos[m].squeeze()) + 
+#             ' scales=' + str(scl[m].squeeze()))
+#     return pos, sig
 
 
-def initpos(chunks, npix, ind, pos0=None):
-    pos = np.zeros((npix, ), dtype='float32')
-    pos = partition(pos, chunks)
-    if pos0 is None:
-        pos0 = pos
-        lamda = 0
-    else:
-        pos0 = collapse(pos0, pack(ind))
-        pos0 = partition(pos0, 8)
-    return pos, pos0, lamda
 
 
-def initsig(algo, chunks, npix, factor):
-    maxsize = algo['sig']['init']['maxsize']
-    avgsize = algo['sig']['init']['avgsize']
-    sig = np.zeros(maxsize, dtype='float32')
-    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
-    sig[first:first+avgsize] = footprnt(avgsize)
-    sig = stretcharr(sig, factor)
-    sig = np.tile(sig, (npix, 1))
-    return partition(sig, chunks)
+# def _decode(args):
+#     data, mask, pos, sig, scales, pos0, lamda, algo, bases = unpackdecodeargs(args)
+#     npix = data.shape[0]
+
+#     for m in range(npix):
+#         pos[m], sig[m] = pixdecode(
+#             data[m], mask, pos[m], sig[m], scales[m], pos0[m], lamda, algo, bases)
+#         logging.info('Pixel decoded: ' +
+#             str(m) + '/' + str(npix - 1) + 
+#             ' pos=' + str(pos[m].squeeze()) + 
+#             ' scales=' + str(scales[m].squeeze()))
+#     return pos, sig
 
 
-def packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks):
-    mask = [mask] * chunks
-    algo = [algo] * chunks
-    lamda = [lamda] * chunks
-    bases = [bases] * chunks
-    return [data, mask, pos, sig, scales, pos0, lamda, algo, bases]
 
 
-def unpackdecodeargs(args):
-    data = args[0]
-    mask = args[1]
-    pos = args[2]
-    sig = args[3]
-    scales = args[4]
-    pos0 = args[5]
-    lamda = args[6]
-    algo = args[7]
-    bases = args[8]
-    return data, mask, pos, sig, scales, pos0, lamda, algo, bases
+# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
+#     import cold
+#     import time
+#     from scipy import ndimage
+#     t = time.time()
+#     for m in range(data.shape[0]):
+#         _data = cold.normalize(data[m])
+#         _data = ndimage.zoom(_data, scale[m], order=1)
+#         _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
+#         _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
+#         pos[m] = _pos
+#         sig[m] = _sig
+#     elapsedtime = time.time() - t
+#     return pos, sig, elapsedtime
 
 
-def stretchfactor(resolution, step):
-    factor = step / resolution
-    return factor
 
 
-def _decode(args):
-    data, mask, pos, sig, scales, pos0, lamda, algo, bases = unpackdecodeargs(args)
-    npix = data.shape[0]
+# def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
 
-    for m in range(npix):
-        pos[m], sig[m] = pixdecode(
-            data[m], mask, pos[m], sig[m], scales[m], pos0[m], lamda, algo, bases)
-        logging.info('Pixel decoded: ' +
-            str(m) + '/' + str(npix - 1) + 
-            ' pos=' + str(pos[m].squeeze()) + 
-            ' scales=' + str(scales[m].squeeze()))
-    return pos, sig
+#     # Number pf processes
+#     chunks = len(data)
+
+#     # Number of total pixels
+#     npix = 0
+#     for item in data:
+#         npix += item.shape[0]
+
+#     scales = initscales(ind, geo, chunks)
+#     mask = initmask(mask)
+#     sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
+#     pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
+#     bases = initbases(algo, sig)
+
+#     if algo['server'] == 'local':
+
+#         # Pack arguments as list and run
+#         args = packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks)
+#         results = runpar(_decode, args, chunks)
+
+#         # Unpack results and rescale them
+#         for m in range(chunks):
+#             pos[m] = results[m][0]
+#             sig[m] = results[m][1]
+
+#     if algo['server'] == 'remote':
+
+#         from funcx.sdk.client import FuncXClient
+#         import time
+
+#         fxc = FuncXClient()
+#         fxc.version_check()
+
+#         ep_info = fxc.get_endpoint_status(algo['functionid'])
+#         if ep_info['status'] != 'online': 
+#             raise RuntimeError("End point is not online!")
+
+#         pixrecon_fid = fxc.register_function(pixrecon, description=f"Decoder.")
+
+#         # Create a batch of pi function tasks
+#         pixrecon_batch = fxc.create_batch()
+#         for m in range(chunks):
+#             pixrecon_batch.add(
+#                 data[m], mask, pos[m], sig[m], 
+#                 scales[m], algo, pos0[m], lamda, bases, 
+#                 endpoint_id=algo['functionid'], function_id=pixrecon_fid)
+
+#         batch_task_ids = fxc.batch_run(pixrecon_batch)
+#         counter = 0
+#         while True: 
+#             batch_task_status = fxc.get_batch_result(batch_task_ids)
+#             finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+#             running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+#             if not running_tasks: break
+#             else: 
+#                 print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
+#             time.sleep(10) # Wait 2 secs before checking the results
+#             counter += 10
+
+#         # Unpack results and rescale them
+#         for m, task in zip(range(chunks), finished_tasks): 
+#             pos[m] = batch_task_status[task]['result'][0]
+#             sig[m] = batch_task_status[task]['result'][1]
+#             print(batch_task_status[task]['result'][2])
+         
+#     return pos, sig, scales, pos0
+
+# def initbases(algo, sig):
+#     bases = baseskernel(sig[0].shape[1], 
+#                 algo['sig']['order'], 
+#                 algo['sig']['scale'])
+#     return bases
 
 
-def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
-    """The main function for decoding pixel data."""
-    data = normalize(data)
-    data = ndimage.zoom(data, scale, order=1)
-    pos = posrecon(data, mask, sig, algo, pos0, lamda)
-    sig = sigrecon(data, mask, pos, sig, algo, bases)
-    return pos, sig
+# def baseskernel(size, order, scale):
+#     # Original grid [must be integers]
+#     grid = np.arange(0, size + 1, dtype='int')
+
+#     # Initial knots [must be integers]
+#     knots = np.arange(0, size + 1, scale, dtype='int')
+
+#     # Number of B-splines
+#     ncoefs = knots.size - order - 1
+
+#     bases = np.zeros((size, ncoefs))
+#     for m in range(ncoefs):
+
+#         # B-splines define
+#         t = knots[m:m + order + 2] # knots
+#         b = BSpline.basis_element(t)
+
+#         inc = knots[m]
+#         while knots[m + order + 1] > inc:
+#             bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+#             inc += 1
+#     return bases
+
+# def initscales(ind, geo, chunks):
+#     args = packscaleargs(ind, geo, chunks)
+#     scales = runpar(_getscales, args, chunks)
+#     return scales
+
+
+
+# def decode(data, ind, mask, geo, algo, pos0=None):
+#     """Decodes the position and pixel footprints and their positions
+#     on the mask using coded measurement data."""
+
+#     # Number pf processes
+#     chunks = len(data)
+
+#     # Number of total pixels
+#     npix = 0
+#     for item in data:
+#         npix += item.shape[0]
+
+#     # # Initialize scalings
+#     # args = packscaleargs(ind, geo, chunks)
+#     # scales = runpar(_getscales, args, chunks)
+
+#     # # Initialize parameters
+#     # mask = initmask(mask)
+#     # sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
+
+#     # # Initial position
+#     # pos = initpos(chunks, npix, ind)
+#     # if pos0 is None:
+#     #     pos0 = pos
+#     # else:
+#     #     pos0 = collapse(pos0, pack(ind))
+#     #     pos0 = partition(pos0, 8)
+#     # bases = initbases(algo, sig)
+
+#     scales = initscales(ind, geo, chunks)
+#     mask = initmask(mask)
+#     sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
+#     pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
+#     bases = initbases(algo, sig)
+
+#     # Pack arguments as list and run
+#     args = packdecodeargs(data, mask, pos, sig, scales, pos0, algo, bases, chunks)
+#     results = runpar(_decode, args, chunks)
+
+#     # Unpack results and rescale them
+#     for m in range(chunks):
+#         pos[m] = results[m][0]
+#         sig[m] = results[m][1]
+#     return pos, sig
+
+
+# def packscaleargs(ind, geo, chunks):
+#     geo = [geo] * chunks
+#     return [ind, geo]
+
+
+# def unpackscaleargs(args):
+#     ind = args[0]
+#     geo = args[1]
+#     return ind, geo
+
+
+# def _getscales(args):
+#     ind, geo = unpackscaleargs(args)
+#     # Scaling factor
+#     factor = stretchfactor(
+#         geo['mask']['resolution'], 
+#         geo['scanner']['step'])
+        
+#     beta = (90 - geo['scanner']['angle']) * np.pi / 180 
+#     scalesscan = np.ones((ind.shape[0], ), dtype='float32')
+#     for m in range(ind.shape[0]):
+#         p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
+#         alpha = np.arctan2(p0[0], p0[1]) #+25
+#         scalesscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
+
+#     weight = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
+#     scalesy = weight * np.ones((ind.shape[0], ), dtype='float32')
+
+#     weight = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
+#     scalesz = weight * np.ones((ind.shape[0], ), dtype='float32')
+#     return scalesy * scalesz * scalesscan * factor * geo['scanner']['step']
+
+
+# def stretchlist(data, scales):
+#     data = data.copy()
+#     chunks = len(data)
+#     for m in range(chunks):
+#         data[m] = stretcharr(data[m], scales)
+#     return data
+        
+
+# def initdata(data, scales):
+#     return stretchlist(data, scales)
+
+
+# def initmask(mask):
+#     return invert(mask)
+
+
+# def initpos(chunks, npix, ind, pos0=None):
+#     pos = np.zeros((npix, ), dtype='float32')
+#     pos = partition(pos, chunks)
+#     if pos0 is None:
+#         pos0 = pos
+#         lamda = 0
+#     else:
+#         pos0 = collapse(pos0, pack(ind))
+#         pos0 = partition(pos0, 8)
+#     return pos, pos0, lamda
+
+
+# def initsig(algo, chunks, npix, factor):
+#     maxsize = algo['sig']['init']['maxsize']
+#     avgsize = algo['sig']['init']['avgsize']
+#     sig = np.zeros(maxsize, dtype='float32')
+#     first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+#     sig[first:first+avgsize] = footprnt(avgsize)
+#     sig = stretcharr(sig, factor)
+#     sig = np.tile(sig, (npix, 1))
+#     return partition(sig, chunks)
+
+
+# def packdecodeargs(data, mask, pos, sig, scales, algo, bases, chunks):
+#     mask = [mask] * chunks
+#     algo = [algo] * chunks
+#     bases = [bases] * chunks
+#     return [data, mask, pos, sig, scales, algo, bases]
+
+
+# def unpackdecodeargs(args):
+#     data = args[0]
+#     mask = args[1]
+#     pos = args[2]
+#     sig = args[3]
+#     scales = args[4]
+#     algo = args[5]
+#     bases = args[6]
+#     return data, mask, pos, sig, scales, algo, bases
+
+
+# def stretchfactor(resolution, step):
+#     factor = step / resolution
+#     return factor
+
+
 
 
 # def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
@@ -561,248 +811,182 @@ def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
 
 
 
-def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
-    import cold
-    import time
-    from scipy import ndimage
-    t = time.time()
-    for m in range(data.shape[0]):
-        _data = cold.normalize(data[m])
-        _data = ndimage.zoom(_data, scale[m], order=1)
-        _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
-        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
-        pos[m] = _pos
-        sig[m] = _sig
-    elapsedtime = time.time() - t
-    return pos, sig, elapsedtime
+# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
+#     import cold
+#     import time
+#     from scipy import ndimage
+#     t = time.time()
+#     for m in range(data.shape[0]):
+#         _data = cold.normalize(data[m])
+#         _data = ndimage.zoom(_data, scale[m], order=1)
+#         _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
+#         _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
+#         pos[m] = _pos
+#         sig[m] = _sig
+#     elapsedtime = time.time() - t
+#     return pos, sig, elapsedtime
 
 
-def posrecon(data, mask, pos0, sig, algo):
-    sim = signal.convolve(mask, sig, 'same')
-    costsize = sim.size - data.size
-    cost = np.zeros((costsize), dtype='float32')
-    for m in range(costsize):
-        if algo['pos']['method'] == 'lsqr':
-            cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
-                algo['pos']['regpar'] * np.sum(np.power(m - pos0, 2)))
-    try:
-        pos = np.where(cost.min() == cost)[0][0]
-    except IndexError:
-        pass
-    return pos
+# def baseskernel(size, order, scale):
+#     # Original grid [must be integers]
+#     grid = np.arange(0, size + 1, dtype='int')
+
+#     # Initial knots [must be integers]
+#     knots = np.arange(0, size + 1, scale, dtype='int')
+
+#     # Number of B-splines
+#     ncoefs = knots.size - order - 1
+
+#     bases = np.zeros((size, ncoefs))
+#     for m in range(ncoefs):
+
+#         # B-splines define
+#         t = knots[m:m + order + 2] # knots
+#         b = BSpline.basis_element(t)
+
+#         inc = knots[m]
+#         while knots[m + order + 1] > inc:
+#             bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+#             inc += 1
+#     return bases
 
 
-def sigrecon(data, mask, pos, sig, algo, base):
-    first = int((sig.size - 1) / 2)
-    last = int(mask.size + first - sig.size - data.size)
-    if pos > first and pos < last:
-        kernel = np.zeros((data.size, sig.size), dtype='float32')
-        for m in range(data.size):
-            begin = pos - first + m - 1
-            end =  begin + sig.size
-            kernel[m] = mask[begin:end]
-        coefs = optimize.nnls(np.dot(kernel, base), data)[0][::-1]
-        sig = np.dot(base, coefs)
-        sig /= sig.sum()
-    else:
-        sig *= 0
-    return sig
+# def footprnt(val):
+#     """Create a discrete signal from its parameters."""
+#     window = signal.windows.hann(int(val))
+#     window /= sum(window)
+#     return window
 
 
-def baseskernel(size, order, scale):
-    # Original grid [must be integers]
-    grid = np.arange(0, size + 1, dtype='int')
-
-    # Initial knots [must be integers]
-    knots = np.arange(0, size + 1, scale, dtype='int')
-
-    # Number of B-splines
-    ncoefs = knots.size - order - 1
-
-    bases = np.zeros((size, ncoefs))
-    for m in range(ncoefs):
-
-        # B-splines define
-        t = knots[m:m + order + 2] # knots
-        b = BSpline.basis_element(t)
-
-        inc = knots[m]
-        while knots[m + order + 1] > inc:
-            bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-            inc += 1
-    return bases
+# def plotresults(dat, ind, msk, pos, sig, scales, geo, algo):
+#     _dat = pack(dat)
+#     _ind = pack(ind)
+#     _pos = pack(pos)
+#     _sig = pack(sig)
+#     _scales = pack(scales)
+#     _msk = msk.copy()
+#     npix = _ind.shape[0]
+#     for m in range(npix):
+#         if _pos[m] > 0:
+#             if algo['pos']['method'] == 'lsqr':
+#                 plotlsqr(
+#                     _dat[m], _ind[m], _msk, 
+#                     _pos[m], _sig[m], _scales[m], m)
+#             logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
 
 
-def normalize(data):
-    data = data.copy()
-    diff = max(data) - min(data)
-    stdmin = 2 * np.sqrt(min(data))
-    if stdmin > diff * 0.5:
-        stdmin = 0
-    data = data - (min(data) + stdmin)
-    stdmax = 2 * np.sqrt(max(data))
-    data = data / (max(data) - stdmax)
-    return data
+# def plotlsqr(dat, ind, msk, pos, sig, scale, id):
+#     import matplotlib.pyplot as plt 
+#     from scipy import ndimage   
+#     # dat = ndimage.zoom(dat, scale)
+
+#     plt.figure(figsize=(8, 4))
+
+#     # dat = dat[0:120]
+#     dat = normalize(dat)
+#     dat = ndimage.zoom(dat, scale, order=1)
+#     _sig = sig / sig.max()
+
+#     msk = invert(msk)
+#     _dat = np.zeros(msk.shape)
+#     _dat[int(pos):int(pos+dat.size)] = dat
+
+#     plt.subplot(311)
+#     plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
+#     # plt.plot(msk[300:6060])
+#     # plt.plot(_dat[300:6060], 'r')
+#     plt.step(_sig, 'darkorange')
+#     plt.grid('on')
+#     plt.ylim((-0.5, 1.5))
+
+#     msk = signal.convolve(msk, sig, 'same')
+
+#     plt.subplot(312)
+#     plt.step(msk[300:6060], 'tab:blue')
+#     plt.step(_dat[300:6060], 'tab:red')
+#     plt.grid('on')
+#     plt.ylim((-0.5, 1.5))
+
+#     _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
+
+#     plt.subplot(313)
+#     plt.step(dat, 'tab:red')
+#     plt.step(_msk, 'tab:blue')
+#     plt.grid('on')
+#     plt.ylim((-0.5, 1.5))
+
+#     # plt.figure(figsize=(3, 1))
+#     # dat = dat[0:120]
+#     # dat = normalize(dat)
+#     # plt.plot(dat, 'r')
+#     # plt.grid('on')
+#     # plt.ylim((-0.5, 1.5))
+
+#     plt.tight_layout()
+#     if not os.path.exists('tmp/plot'):
+#         os.makedirs('tmp/plot')
+#     plt.savefig('tmp/plot/plot-' + str(id) + '.png', dpi=240)
+#     plt.close()
 
 
-def footprnt(val):
-    """Create a discrete signal from its parameters."""
-    window = signal.windows.hann(int(val))
-    window /= sum(window)
-    return window
+# def calibrate(data, ind, pos, sig, shift, geo):
+#     # Number pf processes
+#     chunks = len(data)
+
+#     # Initialize 
+#     dist = np.arange(*geo['mask']['calibrate']['dist'])
+
+#     maximum = 0
+#     optdist = 0
+#     for k in range(len(dist)):
+#         # Pack arguments as list and run
+#         geo['mask']['focus']['dist'] = dist[k]
+#         args = packcalibrateargs(data, ind, pos, sig, shift, geo, chunks)
+#         depth = runpar(_calibrate, args, chunks)
+
+#         # Save results
+#         saveplt('tmp/dep-dist/dep-' + str(k), depth, geo['source']['grid'])
+#         if np.sqrt(np.sum(np.power(depth, 2))) > maximum:
+#             maximum = np.sqrt(np.sum(np.power(depth, 2)))
+#             optdist = dist[k]
+#     logging.info("Optimum distance: " + str(optdist))
+#     return optdist
 
 
-def invert(mask):
-    return np.abs(mask.copy() - 1)
+# def packcalibrateargs(data, ind, pos, sig, shift, geo, chunks):
+#     geo = [geo] * chunks
+#     shift = [shift] * chunks
+#     return [data, ind, pos, sig, shift, geo]
 
 
-def stackargs(args, nproc):
-    argstack = []
-    for m in range(nproc):
-        inputs = []
-        for arg in args:
-            inputs.append(arg[m])
-        argstack.append(inputs)
-    return argstack
+# def unpackcalibrateargs(args):
+#     data = args[0]
+#     ind = args[1]
+#     pos = args[2]
+#     sig = args[3]
+#     shift = args[4]
+#     geo = args[5]
+#     return data, ind, pos, sig, shift, geo
 
 
-def runpar(myfunc, args, nproc):
-    pool = multiprocessing.Pool(processes=nproc)
-    results = pool.map(myfunc, stackargs(args, nproc))
-    pool.close()
-    pool.join()
-    return results
+# def _calibrate(args):
+#     # Unpack arguments
+#     data, ind, pos, sig, shift, geo = unpackcalibrateargs(args)
 
+#     # Source beam
+#     grid = np.arange(*geo['source']['grid'])
 
-def plotresults(dat, ind, msk, pos, sig, scales, geo, algo):
-    _dat = pack(dat)
-    _ind = pack(ind)
-    _pos = pack(pos)
-    _sig = pack(sig)
-    _scales = pack(scales)
-    _msk = msk.copy()
-    npix = _ind.shape[0]
-    for m in range(npix):
-        if _pos[m] > 0:
-            if algo['pos']['method'] == 'lsqr':
-                plotlsqr(
-                    _dat[m], _ind[m], _msk, 
-                    _pos[m], _sig[m], _scales[m], m)
-            logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
+#     # Initializations
+#     depth = np.zeros((len(grid), ), dtype='float32')
 
+#     # Number of pixels to be processed
+#     npix = data.shape[0]
 
-def plotlsqr(dat, ind, msk, pos, sig, scale, id):
-    import matplotlib.pyplot as plt 
-    from scipy import ndimage   
-    # dat = ndimage.zoom(dat, scale)
-
-    plt.figure(figsize=(8, 4))
-
-    # dat = dat[0:120]
-    dat = normalize(dat)
-    dat = ndimage.zoom(dat, scale, order=1)
-    _sig = sig / sig.max()
-
-    msk = invert(msk)
-    _dat = np.zeros(msk.shape)
-    _dat[int(pos):int(pos+dat.size)] = dat
-
-    plt.subplot(311)
-    plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
-    # plt.plot(msk[300:6060])
-    # plt.plot(_dat[300:6060], 'r')
-    plt.step(_sig, 'darkorange')
-    plt.grid('on')
-    plt.ylim((-0.5, 1.5))
-
-    msk = signal.convolve(msk, sig, 'same')
-
-    plt.subplot(312)
-    plt.step(msk[300:6060], 'tab:blue')
-    plt.step(_dat[300:6060], 'tab:red')
-    plt.grid('on')
-    plt.ylim((-0.5, 1.5))
-
-    _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
-
-    plt.subplot(313)
-    plt.step(dat, 'tab:red')
-    plt.step(_msk, 'tab:blue')
-    plt.grid('on')
-    plt.ylim((-0.5, 1.5))
-
-    # plt.figure(figsize=(3, 1))
-    # dat = dat[0:120]
-    # dat = normalize(dat)
-    # plt.plot(dat, 'r')
-    # plt.grid('on')
-    # plt.ylim((-0.5, 1.5))
-
-    plt.tight_layout()
-    if not os.path.exists('tmp/plot'):
-        os.makedirs('tmp/plot')
-    plt.savefig('tmp/plot/plot-' + str(id) + '.png', dpi=240)
-    plt.close()
-
-
-def calibrate(data, ind, pos, sig, shift, geo):
-    # Number pf processes
-    chunks = len(data)
-
-    # Initialize 
-    dist = np.arange(*geo['mask']['calibrate']['dist'])
-
-    maximum = 0
-    optdist = 0
-    for k in range(len(dist)):
-        # Pack arguments as list and run
-        geo['mask']['focus']['dist'] = dist[k]
-        args = packcalibrateargs(data, ind, pos, sig, shift, geo, chunks)
-        depth = runpar(_calibrate, args, chunks)
-
-        # Save results
-        saveplt('tmp/dep-dist/dep-' + str(k), depth, geo['source']['grid'])
-        if np.sqrt(np.sum(np.power(depth, 2))) > maximum:
-            maximum = np.sqrt(np.sum(np.power(depth, 2)))
-            optdist = dist[k]
-    logging.info("Optimum distance: " + str(optdist))
-    return optdist
-
-
-def packcalibrateargs(data, ind, pos, sig, shift, geo, chunks):
-    geo = [geo] * chunks
-    shift = [shift] * chunks
-    return [data, ind, pos, sig, shift, geo]
-
-
-def unpackcalibrateargs(args):
-    data = args[0]
-    ind = args[1]
-    pos = args[2]
-    sig = args[3]
-    shift = args[4]
-    geo = args[5]
-    return data, ind, pos, sig, shift, geo
-
-
-def _calibrate(args):
-    # Unpack arguments
-    data, ind, pos, sig, shift, geo = unpackcalibrateargs(args)
-
-    # Source beam
-    grid = np.arange(*geo['source']['grid'])
-
-    # Initializations
-    depth = np.zeros((len(grid), ), dtype='float32')
-
-    # Number of pixels to be processed
-    npix = data.shape[0]
-
-    for m in range(npix):
-        # Calculate the signal footprint along the beam
-        fp = _footprint(data[m], ind[m], pos[m], sig[m], shift, geo)
-        depth += fp
-    return depth
+#     for m in range(npix):
+#         # Calculate the signal footprint along the beam
+#         fp = _footprint(data[m], ind[m], pos[m], sig[m], shift, geo)
+#         depth += fp
+#     return depth
 
 
 def resolve(data, ind, pos, sig, geo, shift=0):
@@ -811,7 +995,9 @@ def resolve(data, ind, pos, sig, geo, shift=0):
     chunks = len(data)
 
     # Pack arguments as list and run
-    args = packresolveargs(data, ind, pos, sig, shift, geo, chunks)
+    shift = [shift] * chunks
+    geo = [geo] * chunks
+    args = [data, ind, pos, sig, shift, geo]
     results = runpar(_resolve, args, chunks)
 
     # Unpack results
@@ -823,25 +1009,14 @@ def resolve(data, ind, pos, sig, geo, shift=0):
     return depth, laue
 
 
-def packresolveargs(data, ind, pos, sig, shift, geo, chunks):
-    shift = [shift] * chunks
-    geo = [geo] * chunks
-    return [data, ind, pos, sig, shift, geo]
-
-
-def unpackresolveargs(args):
+def _resolve(args):
+    # Unpack arguments
     data = args[0]
     ind = args[1]
     pos = args[2]
     sig = args[3]
     shift = args[4]
     geo = args[5]
-    return data, ind, pos, sig, shift, geo
-
-
-def _resolve(args):
-    # Unpack arguments
-    data, ind, pos, sig, shift, geo = unpackresolveargs(args)
     
     # Number of pixels to be processed
     npix = data.shape[0]
@@ -896,8 +1071,6 @@ def _footprint(dat, ind, pos, sig, shift, geo):
     zz = geo['mask']['focus']['cenz']
 
     # Points on the mask for ray tracing
-    # p1 = np.array([-pos * 1e-3 + xx, yy, 100 + zz], dtype='float32')
-    # p2 = np.array([-pos * 1e-3 + xx, yy, -100 + zz], dtype='float32')
     p1 = np.array([-pos * 1e-3 + shift, yy, 100], dtype='float32')
     p2 = np.array([-pos * 1e-3 + shift, yy, -100], dtype='float32')
 
@@ -911,14 +1084,6 @@ def _footprint(dat, ind, pos, sig, shift, geo):
     p2[0], p2[2] = _rotpoint2d(p2[0], p2[2], xx, zz, angley)
     p1[0], p1[1] = _rotpoint2d(p1[0], p1[1], xx, yy, anglez)
     p2[0], p2[1] = _rotpoint2d(p2[0], p2[1], xx, yy, anglez)
-    # p1[1], p1[2] = rotpoint2d(p1[1], p1[2], anglex)
-    # p2[1], p2[2] = rotpoint2d(p2[1], p2[2], anglex)
-    # p1[0], p1[2] = rotpoint2d(p1[0], p1[2], angley)
-    # p2[0], p2[2] = rotpoint2d(p2[0], p2[2], angley)
-    # p1[0], p1[1] = rotpoint2d(p1[0], p1[1], anglez)
-    # p2[0], p2[1] = rotpoint2d(p2[0], p2[1], anglez)
-    # p1[0] -= shift
-    # p2[0] -= shift
 
     intersection = intersect(s1, s2, p0, p1, p2)
 
