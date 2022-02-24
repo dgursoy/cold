@@ -150,11 +150,6 @@ def remoterec(data, ind, mask, geo, algo):
             sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
         scl.append(weighty * weightz * factor * geo['scanner']['step'] * sclscan)
 
-    _data = []
-    for m in range(data[m]):
-        _data[m] = normalize(data[m])
-        _data[m] = ndimage.zoom(_data[m], scl[m], order=1)
-
     if algo['server'] == 'remote':
         from funcx.sdk.client import FuncXClient
         import time
@@ -172,7 +167,7 @@ def remoterec(data, ind, mask, geo, algo):
         job = fxc.create_batch()
         for m in range(chunks):
             job.add(
-                _data[m], ind[m], mask, algo, pos[m], sig[m], scl[m],
+                data[m], mask, algo, pos[m], sig[m], scl[m],
                 endpoint_id=algo['functionid'], function_id=fid)
 
         batch_task_ids = fxc.batch_run(job)
@@ -196,32 +191,19 @@ def remoterec(data, ind, mask, geo, algo):
     return pos, sig
 
 
-def _remoterec(data, ind, mask, algo, pos, sig):
+def _remoterec(data, mask, algo, pos, sig, scl):
     from scipy.interpolate import BSpline
+    from scipy import ndimage
     import numpy as np
     import cold
     import time
     t = time.time()
 
-    # Init bases
-    size = sig.shape[1]
-    order = algo['sig']['order']
-    scale = algo['sig']['scale']
-    grid = np.arange(0, size + 1, dtype='int')
-    knots = np.arange(0, size + 1, scale, dtype='int')
-    ncoefs = knots.size - order - 1
-    bases = np.zeros((size, ncoefs))
-    for m in range(ncoefs):
-        t = knots[m:m + order + 2] # knots
-        b = BSpline.basis_element(t)
-        inc = knots[m]
-        while knots[m + order + 1] > inc:
-            bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-            inc += 1
-
     for m in range(data.shape[0]):
-        _pos = cold.posrecon(data[m], mask, pos[m], sig[m], algo)
-        _sig = cold.sigrecon(data[m], mask, _pos, sig[m], algo, bases)
+        _data = cold.normalize(data[m])
+        _data = ndimage.zoom(_data, scl[m], order=1)
+        _pos = cold.posrecon(_data, mask, pos[m], sig[m], algo)
+        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo)
         pos[m] = _pos
         sig[m] = _sig
 
@@ -585,7 +567,24 @@ def posrecon(data, mask, pos, sig, algo):
     return _pos
 
 
-def sigrecon(data, mask, pos, sig, algo, bases):
+def sigrecon(data, mask, pos, sig, algo):
+    
+    # Init bases
+    size = sig.size
+    order = algo['sig']['order']
+    scale = algo['sig']['scale']
+    grid = np.arange(0, size + 1, dtype='int')
+    knots = np.arange(0, size + 1, scale, dtype='int')
+    ncoefs = knots.size - order - 1
+    bases = np.zeros((size, ncoefs))
+    for m in range(ncoefs):
+        t = knots[m:m + order + 2] # knots
+        b = BSpline.basis_element(t)
+        inc = knots[m]
+        while knots[m + order + 1] > inc:
+            bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+            inc += 1
+
     first = int((sig.size - 1) / 2)
     last = int(mask.size + first - sig.size - data.size)
     if pos > first and pos < last:
@@ -594,16 +593,8 @@ def sigrecon(data, mask, pos, sig, algo, bases):
             begin = pos - first + m - 1
             end =  begin + sig.size
             kernel[m] = mask[begin:end]
-        if algo['sig']['method'] == 'splines':
-            coefs = optimize.nnls(np.dot(kernel, bases), data)[0][::-1]
-            sig = np.dot(bases, coefs)
-        if algo['sig']['method'] == 'nnls':
-            sig = optimize.nnls(kernel, data)[0][::-1]
-        if algo['sig']['method'] == 'pinv':
-            ikernel = linalg.pinv(kernel, algo['sig']['init']['atol'])
-            sig = np.dot(ikernel, data)[::-1]
-        if algo['sig']['method'] == 'rlucy':
-            sig = restoration.richardson_lucy(data, kernel, num_iter=30)
+        coefs = optimize.nnls(np.dot(kernel, bases), data)[0][::-1]
+        sig = np.dot(bases, coefs)
         sig /= sig.sum()
     else:
         sig *= 0
