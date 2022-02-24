@@ -41,7 +41,6 @@ def sortblobs(blobs, img):
 
 
 def ipos(file, mask, geo, algo, threshold=1000):
-
     # Load an image
     img = loadsingle(file, id=file['range'][0])
     img[img < threshold] = 0
@@ -109,62 +108,20 @@ def ipos(file, mask, geo, algo, threshold=1000):
 
 def remoterec(data, ind, mask, geo, algo):
 
+    # Number pf chunks
+    chunks = len(data)
+
     # Initialize mask
     mask = invert(mask)
 
-    from funcx.sdk.client import FuncXClient
-    import time
-
-    fxc = FuncXClient()
-    fxc.version_check()
-
-    ep_info = fxc.get_endpoint_status(algo['functionid'])
-    if ep_info['status'] != 'online': 
-        raise RuntimeError("End point is not online!")
-
-    fid = fxc.register_function(_remoterec, description=f"Decoder.")
-
-    # Create a batch function tasks
-    job = fxc.create_batch()
-    for m in range(len(data)):
-        job.add(
-            data[m], ind[m], mask, geo, algo,
-            endpoint_id=algo['functionid'], function_id=fid)
-
-    batch_task_ids = fxc.batch_run(job)
-    counter = 0
-    while True: 
-        batch_task_status = fxc.get_batch_result(batch_task_ids)
-        finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-        running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
-        if not running_tasks: break
-        else: 
-            print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
-        time.sleep(10) # Wait 2 secs before checking the results
-        counter += 10
-
-    # Unpack results and rescale them
-    for m, task in zip(range(len(data)), finished_tasks): 
-        pos = batch_task_status[task]['result'][0]
-        sig = batch_task_status[task]['result'][1]
-        print(batch_task_status[task]['result'][2])
-
-    return pos, sig
-
-
-def _remoterec(data, ind, mask, geo, algo):
-    import time
-    import cold
-    import numpy as np
-    from scipy import signal, interpolate
-
-    t = time.time()
-
-    # Number of pixels
-    npix, nscan = data.shape
+    # Number of total pixels
+    npix = 0
+    for item in data:
+        npix += item.shape[0]
 
     # Initialize pos
     pos = np.zeros((npix, ), dtype='float32')
+    pos = partition(pos, chunks)
     
     # Initialize sig
     maxsize = algo['sig']['init']['maxsize']
@@ -174,6 +131,77 @@ def _remoterec(data, ind, mask, geo, algo):
     window = signal.windows.hann(int(avgsize))
     window /= sum(window)
     sig[first:first+avgsize] = window
+    factor = 1 / geo['mask']['resolution']
+    sig = stretcharr(sig, factor)
+    sig = np.tile(sig, (npix, 1))
+    sig = partition(sig, chunks)
+
+    # Initialize scl
+    scl = []
+    factor = geo['scanner']['step'] / geo['mask']['resolution']
+    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
+    weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
+    weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
+    for n in range(chunks):
+        sclscan = np.ones((ind[n].shape[0], ), dtype='float32')
+        for m in range(ind[n].shape[0]):
+            p0 = pix2pos(ind[n][m], geo) # [<->, dis2det, v^]
+            alpha = np.arctan2(p0[0], p0[1]) #+25
+            sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
+        scl.append(weighty * weightz * factor * geo['scanner']['step'] * sclscan)
+
+    _data = []
+    for m in range(data[m]):
+        _data[m] = normalize(data[m])
+        _data[m] = ndimage.zoom(_data[m], scl[m], order=1)
+
+    if algo['server'] == 'remote':
+        from funcx.sdk.client import FuncXClient
+        import time
+
+        fxc = FuncXClient()
+        fxc.version_check()
+
+        ep_info = fxc.get_endpoint_status(algo['functionid'])
+        if ep_info['status'] != 'online': 
+            raise RuntimeError("End point is not online!")
+
+        fid = fxc.register_function(_remoterec, description=f"Decoder.")
+
+        # Create a batch function tasks
+        job = fxc.create_batch()
+        for m in range(chunks):
+            job.add(
+                _data[m], ind[m], mask, algo, pos[m], sig[m], scl[m],
+                endpoint_id=algo['functionid'], function_id=fid)
+
+        batch_task_ids = fxc.batch_run(job)
+        counter = 0
+        while True: 
+            batch_task_status = fxc.get_batch_result(batch_task_ids)
+            finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+            running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+            if not running_tasks: break
+            else: 
+                print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
+            time.sleep(10) # Wait 2 secs before checking the results
+            counter += 10
+
+        # Unpack results and rescale them
+        for m, task in zip(range(chunks), finished_tasks): 
+            pos[m] = batch_task_status[task]['result'][0]
+            sig[m] = batch_task_status[task]['result'][1]
+            print(batch_task_status[task]['result'][2])
+
+    return pos, sig
+
+
+def _remoterec(data, ind, mask, algo, pos, sig):
+    from scipy.interpolate import BSpline
+    import numpy as np
+    import cold
+    import time
+    t = time.time()
 
     # Init bases
     size = sig.shape[1]
@@ -185,37 +213,38 @@ def _remoterec(data, ind, mask, geo, algo):
     bases = np.zeros((size, ncoefs))
     for m in range(ncoefs):
         t = knots[m:m + order + 2] # knots
-        b = interpolate.BSpline.basis_element(t)
+        b = BSpline.basis_element(t)
         inc = knots[m]
         while knots[m + order + 1] > inc:
             bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
             inc += 1
 
-    # Init scales
-    factor = geo['scanner']['step'] / geo['mask']['resolution']
-    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-    scalesscan = np.ones((ind.shape[0], ), dtype='float32')
-    for m in range(ind.shape[0]):
-        p0 = cold.pix2pos(ind[m], geo) # [<->, dis2det, v^]
-        alpha = np.arctan2(p0[0], p0[1]) #+25
-        scalesscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-    weight = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-    scalesy = weight * np.ones((ind.shape[0], ), dtype='float32')
-    weight = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-    scalesz = weight * np.ones((ind.shape[0], ), dtype='float32')
-    scales = scalesy * scalesz * scalesscan * factor * geo['scanner']['step']
-
-    # # Solve for pos
-    # pos = np.zeros(data.shape, dtype='float32')
-
-    # # Solve for sig
-    # sig = np.zeros(algo['sig']['init']['maxsize'], dtype='float32')
+    for m in range(data.shape[0]):
+        _pos = cold.posrecon(data[m], mask, pos[m], sig[m], algo)
+        _sig = cold.sigrecon(data[m], mask, _pos, sig[m], algo, bases)
+        pos[m] = _pos
+        sig[m] = _sig
 
     elapsedtime = time.time() - t
-    return 0, 1, elapsedtime
+    return pos, sig, elapsedtime
 
 
 
+
+def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
+    import cold
+    import time
+    from scipy import ndimage
+    t = time.time()
+    for m in range(data.shape[0]):
+        _data = cold.normalize(data[m])
+        _data = ndimage.zoom(_data, scale[m], order=1)
+        _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
+        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
+        pos[m] = _pos
+        sig[m] = _sig
+    elapsedtime = time.time() - t
+    return pos, sig, elapsedtime
 
 
 
@@ -391,7 +420,7 @@ def stretcharr(arr, factor, order=1):
     elif len(arr.shape) == 1:
         zoom = factor
     arr = ndimage.zoom(arr, zoom, order=order)
-    return arr
+    return arr / factor
         
     
 def initdata(data, scales):
@@ -420,7 +449,7 @@ def initsig(algo, chunks, npix, factor):
     sig = np.zeros(maxsize, dtype='float32')
     first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
     sig[first:first+avgsize] = footprnt(avgsize)
-    sig = stretcharr(sig, factor) / factor
+    sig = stretcharr(sig, factor)
     sig = np.tile(sig, (npix, 1))
     return partition(sig, chunks)
 
@@ -541,18 +570,19 @@ def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
     return pos, sig, elapsedtime
 
 
-def posrecon(data, mask, sig, algo, pos0, lamda):
+def posrecon(data, mask, pos, sig, algo):
     sim = signal.convolve(mask, sig, 'same')
     costsize = sim.size - data.size
     cost = np.zeros((costsize), dtype='float32')
     for m in range(costsize):
         if algo['pos']['method'] == 'lsqr':
-            cost[m] = np.sum(np.power(sim[m:m+data.size] - data, 2)) + lamda * np.sum(np.power(m - pos0, 2))
+            cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
+                algo['pos']['regpar'] * np.sum(np.power(m - pos, 2)))
     try:
-        pos = np.where(cost.min() == cost)[0][0]
+        _pos = np.where(cost.min() == cost)[0][0]
     except IndexError:
         pass
-    return pos
+    return _pos
 
 
 def sigrecon(data, mask, pos, sig, algo, bases):
@@ -928,7 +958,7 @@ def footprintcor(geo, sig):
         factor =  p * a / (a + c) / sig.size  / (1e3 * gr[2])
     except ZeroDivisionError:
         factor = 1
-    return stretcharr(sig, factor, order=1) / factor
+    return stretcharr(sig, factor, order=1)
 
 
 def intersect(s1, s2, p0, p1, p2):
