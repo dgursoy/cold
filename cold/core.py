@@ -136,6 +136,22 @@ def remoterec(data, ind, mask, geo, algo):
     sig = np.tile(sig, (npix, 1))
     sig = partition(sig, chunks)
 
+    # Initialize bases
+    size = sig.shape[1]
+    order = algo['sig']['order']
+    scale = algo['sig']['scale']
+    grid = np.arange(0, size + 1, dtype='int')
+    knots = np.arange(0, size + 1, scale, dtype='int')
+    ncoefs = knots.size - order - 1
+    base = np.zeros((size, ncoefs))
+    for m in range(ncoefs):
+        t = knots[m:m + order + 2] # knots
+        b = BSpline.basis_element(t)
+        inc = knots[m]
+        while knots[m + order + 1] > inc:
+            base[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+            inc += 1
+
     # Initialize scl
     scl = []
     factor = geo['scanner']['step'] / geo['mask']['resolution']
@@ -154,7 +170,8 @@ def remoterec(data, ind, mask, geo, algo):
         # Pack arguments as list and run
         mask = [mask] * chunks
         algo = [algo] * chunks
-        args = [data, mask, algo, pos, sig, scl]
+        base = [base] * chunks
+        args = [data, mask, algo, pos, sig, scl, base]
         results = runpar(_decode, args, chunks)
 
         # Unpack results and rescale them
@@ -179,7 +196,7 @@ def remoterec(data, ind, mask, geo, algo):
         job = fxc.create_batch()
         for m in range(chunks):
             job.add(
-                data[m], mask, algo, pos[m], sig[m], scl[m],
+                data[m], mask, algo, pos[m], sig[m], scl[m], base,
                 endpoint_id=algo['functionid'], function_id=fid)
 
         batch_task_ids = fxc.batch_run(job)
@@ -203,36 +220,18 @@ def remoterec(data, ind, mask, geo, algo):
     return pos, sig
 
 
-def _remoterec(data, mask, algo, pos, sig, scl):
-    from scipy import ndimage
+def _remoterec(data, mask, algo, pos, sig, scl, base):
     import cold
     import time
+    from scipy import ndimage
     t = time.time()
-
-    # Init bases
-    size = sig.shape[1]
-    order = algo['sig']['order']
-    scale = algo['sig']['scale']
-    grid = np.arange(0, size + 1, dtype='int')
-    knots = np.arange(0, size + 1, scale, dtype='int')
-    ncoefs = knots.size - order - 1
-    bases = np.zeros((size, ncoefs))
-    for m in range(ncoefs):
-        t = knots[m:m + order + 2] # knots
-        b = BSpline.basis_element(t)
-        inc = knots[m]
-        while knots[m + order + 1] > inc:
-            bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-            inc += 1
-
-    # for m in range(data.shape[0]):
-    #     _data = cold.normalize(data[m])
-    #     _data = ndimage.zoom(_data, scl[m], order=1)
-    #     _pos = cold.posrecon(_data, mask, pos[m], sig[m], algo)
-    #     _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo)
-    #     pos[m] = _pos
-    #     sig[m] = _sig
-
+    for m in range(data.shape[0]):
+        _data = cold.normalize(data[m])
+        _data = ndimage.zoom(_data, scl[m], order=1)
+        _pos = cold.posrecon(_data, mask, pos[m], sig[m], algo)
+        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, base)
+        pos[m] = _pos
+        sig[m] = _sig
     elapsedtime = time.time() - t
     return pos, sig, elapsedtime
 
@@ -578,22 +577,22 @@ def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
     return pos, sig, elapsedtime
 
 
-def posrecon(data, mask, pos, sig, algo):
+def posrecon(data, mask, pos0, sig, algo):
     sim = signal.convolve(mask, sig, 'same')
     costsize = sim.size - data.size
     cost = np.zeros((costsize), dtype='float32')
     for m in range(costsize):
         if algo['pos']['method'] == 'lsqr':
             cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
-                algo['pos']['regpar'] * np.sum(np.power(m - pos, 2)))
+                algo['pos']['regpar'] * np.sum(np.power(m - pos0, 2)))
     try:
-        _pos = np.where(cost.min() == cost)[0][0]
+        pos = np.where(cost.min() == cost)[0][0]
     except IndexError:
         pass
-    return _pos
+    return pos
 
 
-def sigrecon(data, mask, pos, sig, algo, bases):
+def sigrecon(data, mask, pos, sig, algo, base):
     first = int((sig.size - 1) / 2)
     last = int(mask.size + first - sig.size - data.size)
     if pos > first and pos < last:
@@ -602,8 +601,8 @@ def sigrecon(data, mask, pos, sig, algo, bases):
             begin = pos - first + m - 1
             end =  begin + sig.size
             kernel[m] = mask[begin:end]
-        coefs = optimize.nnls(np.dot(kernel, bases), data)[0][::-1]
-        sig = np.dot(bases, coefs)
+        coefs = optimize.nnls(np.dot(kernel, base), data)[0][::-1]
+        sig = np.dot(base, coefs)
         sig /= sig.sum()
     else:
         sig *= 0
