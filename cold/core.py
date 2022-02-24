@@ -109,6 +109,9 @@ def ipos(file, mask, geo, algo, threshold=1000):
 
 def remoterec(data, ind, mask, geo, algo):
 
+    # Initialize mask
+    mask = invert(mask)
+
     from funcx.sdk.client import FuncXClient
     import time
 
@@ -125,7 +128,7 @@ def remoterec(data, ind, mask, geo, algo):
     job = fxc.create_batch()
     for m in range(len(data)):
         job.add(
-            data[m],
+            data[m], ind[m], mask, geo, algo,
             endpoint_id=algo['functionid'], function_id=fid)
 
     batch_task_ids = fxc.batch_run(job)
@@ -149,14 +152,58 @@ def remoterec(data, ind, mask, geo, algo):
     return pos, sig
 
 
-def _remoterec(data):
+def _remoterec(data, ind, mask, geo, algo):
     import time
     import cold
+    import numpy as np
+    from scipy import signal, interpolate
 
     t = time.time()
 
-    # # Initialize mask
-    # mask = cold.invert(mask)
+    # Number of pixels
+    npix, nscan = data.shape
+
+    # Initialize pos
+    pos = np.zeros((npix, ), dtype='float32')
+    
+    # Initialize sig
+    maxsize = algo['sig']['init']['maxsize']
+    avgsize = algo['sig']['init']['avgsize']
+    sig = np.zeros(maxsize, dtype='float32')
+    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+    window = signal.windows.hann(int(avgsize))
+    window /= sum(window)
+    sig[first:first+avgsize] = window
+
+    # Init bases
+    size = sig.shape[1]
+    order = algo['sig']['order']
+    scale = algo['sig']['scale']
+    grid = np.arange(0, size + 1, dtype='int')
+    knots = np.arange(0, size + 1, scale, dtype='int')
+    ncoefs = knots.size - order - 1
+    bases = np.zeros((size, ncoefs))
+    for m in range(ncoefs):
+        t = knots[m:m + order + 2] # knots
+        b = interpolate.BSpline.basis_element(t)
+        inc = knots[m]
+        while knots[m + order + 1] > inc:
+            bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
+            inc += 1
+
+    # Init scales
+    factor = geo['scanner']['step'] / geo['mask']['resolution']
+    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
+    scalesscan = np.ones((ind.shape[0], ), dtype='float32')
+    for m in range(ind.shape[0]):
+        p0 = cold.pix2pos(ind[m], geo) # [<->, dis2det, v^]
+        alpha = np.arctan2(p0[0], p0[1]) #+25
+        scalesscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
+    weight = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
+    scalesy = weight * np.ones((ind.shape[0], ), dtype='float32')
+    weight = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
+    scalesz = weight * np.ones((ind.shape[0], ), dtype='float32')
+    scales = scalesy * scalesz * scalesscan * factor * geo['scanner']['step']
 
     # # Solve for pos
     # pos = np.zeros(data.shape, dtype='float32')
@@ -356,7 +403,6 @@ def initmask(mask):
 
 
 def initpos(chunks, npix, ind, pos0=None):
-    pos = np.array(0, dtype='float32')
     pos = np.zeros((npix, ), dtype='float32')
     pos = partition(pos, chunks)
     if pos0 is None:
