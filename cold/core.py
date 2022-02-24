@@ -125,7 +125,7 @@ def remoterec(data, ind, mask, geo, algo):
     job = fxc.create_batch()
     for m in range(len(data)):
         job.add(
-            data[m], mask, algo, 
+            data[m],
             endpoint_id=algo['functionid'], function_id=fid)
 
     batch_task_ids = fxc.batch_run(job)
@@ -149,23 +149,23 @@ def remoterec(data, ind, mask, geo, algo):
     return pos, sig
 
 
-def _remoterec(data, mask, algo):
+def _remoterec(data):
     import time
     import cold
 
     t = time.time()
 
-    # Initialize mask
-    mask = cold.invert(mask)
+    # # Initialize mask
+    # mask = cold.invert(mask)
 
-    # Solve for pos
-    pos = np.zeros(data.shape, dtype='float32')
+    # # Solve for pos
+    # pos = np.zeros(data.shape, dtype='float32')
 
-    # Solve for sig
-    sig = np.zeros(algo['sig']['init']['maxsize'], dtype='float32')
+    # # Solve for sig
+    # sig = np.zeros(algo['sig']['init']['maxsize'], dtype='float32')
 
     elapsedtime = time.time() - t
-    return pos, sig, elapsedtime
+    return 0, 1, elapsedtime
 
 
 
