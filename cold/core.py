@@ -100,6 +100,79 @@ def ipos(file, mask, geo, algo, threshold=1000):
     return pos0
 
 
+
+
+
+
+
+
+
+def remoterec(data, ind, mask, geo, algo):
+
+    from funcx.sdk.client import FuncXClient
+    import time
+
+    fxc = FuncXClient()
+    fxc.version_check()
+
+    ep_info = fxc.get_endpoint_status(algo['functionid'])
+    if ep_info['status'] != 'online': 
+        raise RuntimeError("End point is not online!")
+
+    fid = fxc.register_function(_remoterec, description=f"Decoder.")
+
+    # Create a batch function tasks
+    job = fxc.create_batch()
+    for m in range(len(data)):
+        job.add(
+            data[m], mask, algo, 
+            endpoint_id=algo['functionid'], function_id=fid)
+
+    batch_task_ids = fxc.batch_run(job)
+    counter = 0
+    while True: 
+        batch_task_status = fxc.get_batch_result(batch_task_ids)
+        finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+        running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+        if not running_tasks: break
+        else: 
+            print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
+        time.sleep(10) # Wait 2 secs before checking the results
+        counter += 10
+
+    # Unpack results and rescale them
+    for m, task in zip(range(len(data)), finished_tasks): 
+        pos = batch_task_status[task]['result'][0]
+        sig = batch_task_status[task]['result'][1]
+        print(batch_task_status[task]['result'][2])
+
+    return pos, sig
+
+
+def _remoterec(data, mask, algo):
+    import time
+    import cold
+
+    t = time.time()
+
+    # Initialize mask
+    mask = cold.invert(mask)
+
+    # Solve for pos
+    pos = np.zeros(data.shape, dtype='float32')
+
+    # Solve for sig
+    sig = np.zeros(algo['sig']['init']['maxsize'], dtype='float32')
+
+    elapsedtime = time.time() - t
+    return pos, sig, elapsedtime
+
+
+
+
+
+
+
 def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
 
     # Number pf processes
@@ -129,11 +202,6 @@ def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
 
     if algo['server'] == 'remote':
 
-        # for m in range(chunks):
-        #     print (m, chunks)
-        #     pos[m], sig[m] = pixrecon(data[m], mask, pos[m], sig[m], 
-        #             scales[m], algo, pos0[m], lamda, bases)
-
         from funcx.sdk.client import FuncXClient
         import time
 
@@ -158,19 +226,19 @@ def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
         counter = 0
         while True: 
             batch_task_status = fxc.get_batch_result(batch_task_ids)
-            finished_tasks = [ s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-            for task in finished_tasks: print(f"Finished task: {task}: {batch_task_status[task]}")
-            running_tasks = [ s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
+            finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
+            running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
             if not running_tasks: break
             else: 
-                print(f"Total exec. time (sec): {counter}; Tasks are still running: {running_tasks}")
-            time.sleep(1) # Wait 2 secs before checking the results
-            counter += 1
+                print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
+            time.sleep(10) # Wait 2 secs before checking the results
+            counter += 10
 
         # Unpack results and rescale them
         for m, task in zip(range(chunks), finished_tasks): 
             pos[m] = batch_task_status[task]['result'][0]
             sig[m] = batch_task_status[task]['result'][1]
+            print(batch_task_status[task]['result'][2])
          
     return pos, sig, scales, pos0
 
@@ -413,16 +481,18 @@ def pixdecode(data, mask, pos, sig, scale, pos0, lamda, algo, bases):
 
 def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
     import cold
+    import time
     from scipy import ndimage
+    t = time.time()
     for m in range(data.shape[0]):
         _data = cold.normalize(data[m])
         _data = ndimage.zoom(_data, scale[m], order=1)
-        _sig = sig[m]
-        _pos = cold.posrecon(_data, mask, _sig, algo, pos0[m], lamda)
-        _sig = cold.sigrecon(_data, mask, _pos, _sig, algo, bases)
+        _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
+        _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
         pos[m] = _pos
         sig[m] = _sig
-    return pos, sig
+    elapsedtime = time.time() - t
+    return pos, sig, elapsedtime
 
 
 def posrecon(data, mask, sig, algo, pos0, lamda):
