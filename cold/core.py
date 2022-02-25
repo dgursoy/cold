@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
-
+import os
 import numpy as np
 import logging
-from skimage import restoration
 from scipy import signal, ndimage, optimize, interpolate
 from scipy.interpolate import BSpline
-from cold import pack, partition, smooth, loadsingle, load, collapse
+from cold import pack, partition, smooth, loadsingle, load
 from skimage.feature import blob_log
 import multiprocessing
 import warnings
@@ -20,7 +19,7 @@ __docformat__ = 'restructuredtext en'
 
 
 
-def decode(data, ind, mask, comp, geo, algo):
+def decode(data, ind, mask, comp, geo, algo, debug=False):
     """Decodes the position and pixel footprints and their positions
     on the mask using coded measurement data."""
 
@@ -111,8 +110,8 @@ def decode(data, ind, mask, comp, geo, algo):
 
         fxc = FuncXClient()
         fxc.version_check()
-        ep_info = fxc.get_endpoint_status(comp['functionid'])
-        if ep_info['status'] != 'online': 
+        info = fxc.get_endpoint_status(comp['functionid'])
+        if info['status'] != 'online': 
             raise RuntimeError("End point is not online!")
         fid = fxc.register_function(_decode, description=f"Decoder.")
 
@@ -128,24 +127,27 @@ def decode(data, ind, mask, comp, geo, algo):
         # Info
         counter = 0
         while True: 
-            batch_task_status = fxc.get_batch_result(batch_task_ids)
-            finished_tasks = [s for s in batch_task_status 
-                if batch_task_status[s]['status'] == 'success']
-            running_tasks = [s for s in batch_task_status 
-                if batch_task_status[s]['status'] != 'success']
+            batch_task = fxc.get_batch_result(batch_task_ids)
+            running_tasks = [s for s in batch_task 
+                if batch_task[s]['status'] != 'success']
+            finished_tasks = [s for s in batch_task 
+                if batch_task[s]['status'] == 'success']
             if not running_tasks: break
             else: 
                 logging.info(
-                    f"Total exec. time (sec): {counter};" +
+                    f"Total remote runtime (sec): {counter}; " +
                     "Tasks are still running: " + 
                     f"{len(finished_tasks)} / {len(running_tasks)}")
-            time.sleep(10) # Wait 2 secs before checking the results
+            time.sleep(10) 
             counter += 10
 
         # Unpack results and rescale them
         for m, task in zip(range(comp['workers']), finished_tasks): 
-            pos[m] = batch_task_status[task]['result'][0]
-            sig[m] = batch_task_status[task]['result'][1]
+            pos[m] = batch_task[task]['result'][0]
+            sig[m] = batch_task[task]['result'][1]
+
+    if debug is True:
+        plotresults(data, ind, mask, pos, sig, scl, geo, algo)
 
     return pack(pos), pack(sig)
 
@@ -246,7 +248,7 @@ def sortblobs(blobs, img):
     return blobs
 
 
-def ipos(file, mask, geo, algo, threshold=1000):
+def initializepos(file, mask, geo, algo, threshold=1000, debug=True):
     # Load an image
     img = loadsingle(file, id=file['range'][0])
     img[img < threshold] = 0
@@ -281,27 +283,29 @@ def ipos(file, mask, geo, algo, threshold=1000):
     ind = pack(ind)
 
     # Interpolate positions
-    x = np.arange(0, 2048, 1)
-    y = np.arange(0, 2048, 1)
-    xx, yy = np.meshgrid(x, y)
-    pos0 = interpolate.griddata(ind, pos, (yy, xx), method='nearest')
-
-    # xgrid = np.mgrid[0:2048:2048j, 0:2048:2048j]
-    # xflat = xgrid.reshape(2, -1).T
-    # RR = interpolate.RBFInterpolator(ind, pos, kernel='thin_plate_spline') # linear thin_plate_spline cubic quintic
-    # yflat = RR(xflat)
-    # pos0 = yflat.reshape(2048, 2048)
+    if algo['pos']['init'] == 'nearest':
+        x = np.arange(0, 2048, 1)
+        y = np.arange(0, 2048, 1)
+        xx, yy = np.meshgrid(x, y)
+        pos0 = interpolate.griddata(ind, pos, (yy, xx), method='nearest')
+    elif algo['pos']['init'] == 'splines':
+        xgrid = np.mgrid[0:2048:2048j, 0:2048:2048j]
+        xflat = xgrid.reshape(2, -1).T
+        # linear thin_plate_spline cubic quintic 
+        RR = interpolate.RBFInterpolator(
+            ind, pos, kernel='thin_plate_spline') 
+        yflat = RR(xflat)
+        pos0 = yflat.reshape(2048, 2048)
 
     # Testing
-    test = np.zeros(img.shape)
-    for m in range(blobs.shape[0]):
-        test[points[m, 0], points[m, 1]] = 1
-    test = smooth(test, 2)
-
-    # Save
-    import dxchange
-    dxchange.write_tiff(pos0 +  test / test.max() * 1e3, 'tmp/pos0.tiff')
-    dxchange.write_tiff(pos0, 'tmp/pos0.tiff')
+    if debug is True:
+        import dxchange
+        test = np.zeros(img.shape)
+        for m in range(blobs.shape[0]):
+            test[points[m, 0], points[m, 1]] = 1
+        test = smooth(test, 2)
+        dxchange.write_tiff(pos0 +  test / test.max() * 1e3, 'tmp/pos0.tiff')
+        dxchange.write_tiff(pos0, 'tmp/pos0.tiff')
     return pos0
 
 
@@ -337,596 +341,62 @@ def stretcharr(arr, factor, order=1):
     return arr / factor
 
 
-# def decode(data, ind, mask, geo, algo):
+def plotresults(dat, ind, msk, pos, sig, scl, geo, algo):
+    _dat = pack(dat)
+    _ind = pack(ind)
+    _pos = pack(pos)
+    _sig = pack(sig)
+    _scl = pack(scl)
+    _msk = msk.copy()
+    npix = _ind.shape[0]
+    for m in range(npix):
+        if _pos[m] > 0:
+            if algo['pos']['method'] == 'lsqr':
+                plotlsqr(
+                    _dat[m], _ind[m], _msk, 
+                    _pos[m], _sig[m], _scl[m], m)
+            logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
 
-#     # Number pf chunks
-#     chunks = len(data)
 
-#     # Initialize mask
-#     mask = invert(mask)
-
-#     # Number of total pixels
-#     npix = 0
-#     for item in data:
-#         npix += item.shape[0]
-
-#     # Initialize pos
-#     pos = np.zeros((npix, ), dtype='float32')
-#     pos = partition(pos, chunks)
-#     logging.info('Initialized: Positions')
+def plotlsqr(dat, ind, msk, pos, sig, scl, id):
+    import matplotlib.pyplot as plt 
+    plt.figure(figsize=(8, 4))
     
-#     # Initialize sig
-#     maxsize = algo['sig']['init']['maxsize']
-#     avgsize = algo['sig']['init']['avgsize']
-#     sig = np.zeros(maxsize, dtype='float32')
-#     first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
-#     window = signal.windows.hann(int(avgsize))
-#     window /= sum(window)
-#     sig[first:first+avgsize] = window
-#     factor = 1 / geo['mask']['resolution']
-#     sig = stretcharr(sig, factor)
-#     sig = np.tile(sig, (npix, 1))
-#     sig = partition(sig, chunks)
-#     logging.info('Initialized: Signal')
-
-#     # Initialize bases
-#     size = sig[0].size
-#     order = algo['sig']['order']
-#     scale = algo['sig']['scale']
-#     grid = np.arange(0, size + 1, dtype='int')
-#     knots = np.arange(0, size + 1, scale, dtype='int')
-#     ncoefs = knots.size - order - 1
-#     base = np.zeros((size, ncoefs))
-#     for m in range(ncoefs):
-#         t = knots[m:m + order + 2] # knots
-#         b = BSpline.basis_element(t)
-#         inc = knots[m]
-#         while knots[m + order + 1] > inc:
-#             base[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-#             inc += 1
-#     logging.info('Initialized: Spline bases')
-
-#     # Initialize scl
-#     scl = []
-#     factor = geo['scanner']['step'] / geo['mask']['resolution']
-#     beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-#     weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-#     weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-#     for n in range(chunks):
-#         sclscan = np.ones((ind[n].shape[0], ), dtype='float32')
-#         for m in range(ind[n].shape[0]):
-#             p0 = pix2pos(ind[n][m], geo) # [<->, dis2det, v^]
-#             alpha = np.arctan2(p0[0], p0[1]) #+25
-#             sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-#         scl.append(weighty * weightz * factor * geo['scanner']['step'] * sclscan)
-#     logging.info('Initialized: Scales')
-
-#     if algo['server'] == 'local':
-#         # Pack arguments as list and run
-#         mask = [mask] * chunks
-#         algo = [algo] * chunks
-#         base = [base] * chunks
-#         args = [data, mask, algo, pos, sig, scl, base]
-#         results = runpar(_decode, args, chunks)
-
-#         # Unpack results and rescale them
-#         for m in range(chunks):
-#             pos[m] = results[m][0]
-#             sig[m] = results[m][1]
-
-#     # if algo['server'] == 'remote':
-#     #     from funcx.sdk.client import FuncXClient
-#     #     import time
-
-#     #     fxc = FuncXClient()
-#     #     fxc.version_check()
-
-#     #     ep_info = fxc.get_endpoint_status(algo['functionid'])
-#     #     if ep_info['status'] != 'online': 
-#     #         raise RuntimeError("End point is not online!")
-
-#     #     fid = fxc.register_function(_decode, description=f"Decoder.")
-
-#     #     # Create a batch function tasks
-#     #     job = fxc.create_batch()
-#     #     for m in range(chunks):
-#     #         args = [data[m], mask, algo, pos[m], sig[m], scl[m], base]
-#     #         job.add(args, endpoint_id=algo['functionid'], function_id=fid)
-
-#     #     batch_task_ids = fxc.batch_run(job)
-#     #     counter = 0
-#     #     while True: 
-#     #         batch_task_status = fxc.get_batch_result(batch_task_ids)
-#     #         finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-#     #         running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
-#     #         if not running_tasks: break
-#     #         else: 
-#     #             print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
-#     #         time.sleep(10) # Wait 2 secs before checking the results
-#     #         counter += 10
-
-#     #     # Unpack results and rescale them
-#     #     for m, task in zip(range(chunks), finished_tasks): 
-#     #         pos[m] = batch_task_status[task]['result'][0]
-#     #         sig[m] = batch_task_status[task]['result'][1]
-#     #         print(batch_task_status[task]['result'][2])
-
-#     return pos, sig
-
-
-# def _decode(args):
-#     data = args[0]
-#     mask = args[1]
-#     algo = args[2]
-#     pos = args[3]
-#     sig = args[4]
-#     scl = args[5]
-#     base = args[6]
-
-#     for m in range(data.shape[0]):
-#         _data = normalize(data[m])
-#         _data = ndimage.zoom(_data, scl[m], order=1)
-#         pos[m] = posrecon(_data, mask, pos[m], sig[m], algo)
-#         sig[m] = sigrecon(_data, mask, pos[m], sig[m], algo, base)
-#         logging.info('Pixel decoded: ' +
-#             str(m) + '/' + str(data.shape[0] - 1) + 
-#             ' pos=' + str(pos[m].squeeze()) + 
-#             ' scales=' + str(scl[m].squeeze()))
-#     return pos, sig
-
-
-
-
-# def _decode(args):
-#     data, mask, pos, sig, scales, pos0, lamda, algo, bases = unpackdecodeargs(args)
-#     npix = data.shape[0]
-
-#     for m in range(npix):
-#         pos[m], sig[m] = pixdecode(
-#             data[m], mask, pos[m], sig[m], scales[m], pos0[m], lamda, algo, bases)
-#         logging.info('Pixel decoded: ' +
-#             str(m) + '/' + str(npix - 1) + 
-#             ' pos=' + str(pos[m].squeeze()) + 
-#             ' scales=' + str(scales[m].squeeze()))
-#     return pos, sig
-
-
-
-
-# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
-#     import cold
-#     import time
-#     from scipy import ndimage
-#     t = time.time()
-#     for m in range(data.shape[0]):
-#         _data = cold.normalize(data[m])
-#         _data = ndimage.zoom(_data, scale[m], order=1)
-#         _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
-#         _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
-#         pos[m] = _pos
-#         sig[m] = _sig
-#     elapsedtime = time.time() - t
-#     return pos, sig, elapsedtime
-
-
-
-
-# def recon(data, ind, mask, geo, algo, pos0=None, lamda=None):
-
-#     # Number pf processes
-#     chunks = len(data)
-
-#     # Number of total pixels
-#     npix = 0
-#     for item in data:
-#         npix += item.shape[0]
-
-#     scales = initscales(ind, geo, chunks)
-#     mask = initmask(mask)
-#     sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
-#     pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
-#     bases = initbases(algo, sig)
-
-#     if algo['server'] == 'local':
-
-#         # Pack arguments as list and run
-#         args = packdecodeargs(data, mask, pos, sig, scales, pos0, lamda, algo, bases, chunks)
-#         results = runpar(_decode, args, chunks)
-
-#         # Unpack results and rescale them
-#         for m in range(chunks):
-#             pos[m] = results[m][0]
-#             sig[m] = results[m][1]
-
-#     if algo['server'] == 'remote':
-
-#         from funcx.sdk.client import FuncXClient
-#         import time
-
-#         fxc = FuncXClient()
-#         fxc.version_check()
-
-#         ep_info = fxc.get_endpoint_status(algo['functionid'])
-#         if ep_info['status'] != 'online': 
-#             raise RuntimeError("End point is not online!")
-
-#         pixrecon_fid = fxc.register_function(pixrecon, description=f"Decoder.")
-
-#         # Create a batch of pi function tasks
-#         pixrecon_batch = fxc.create_batch()
-#         for m in range(chunks):
-#             pixrecon_batch.add(
-#                 data[m], mask, pos[m], sig[m], 
-#                 scales[m], algo, pos0[m], lamda, bases, 
-#                 endpoint_id=algo['functionid'], function_id=pixrecon_fid)
-
-#         batch_task_ids = fxc.batch_run(pixrecon_batch)
-#         counter = 0
-#         while True: 
-#             batch_task_status = fxc.get_batch_result(batch_task_ids)
-#             finished_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] == 'success']
-#             running_tasks = [s for s in batch_task_status if batch_task_status[s]['status'] != 'success']
-#             if not running_tasks: break
-#             else: 
-#                 print(f"Total exec. time (sec): {counter}; Tasks are still running: {len(finished_tasks)} / {len(running_tasks)}")
-#             time.sleep(10) # Wait 2 secs before checking the results
-#             counter += 10
-
-#         # Unpack results and rescale them
-#         for m, task in zip(range(chunks), finished_tasks): 
-#             pos[m] = batch_task_status[task]['result'][0]
-#             sig[m] = batch_task_status[task]['result'][1]
-#             print(batch_task_status[task]['result'][2])
-         
-#     return pos, sig, scales, pos0
-
-# def initbases(algo, sig):
-#     bases = baseskernel(sig[0].shape[1], 
-#                 algo['sig']['order'], 
-#                 algo['sig']['scale'])
-#     return bases
-
-
-# def baseskernel(size, order, scale):
-#     # Original grid [must be integers]
-#     grid = np.arange(0, size + 1, dtype='int')
-
-#     # Initial knots [must be integers]
-#     knots = np.arange(0, size + 1, scale, dtype='int')
-
-#     # Number of B-splines
-#     ncoefs = knots.size - order - 1
-
-#     bases = np.zeros((size, ncoefs))
-#     for m in range(ncoefs):
-
-#         # B-splines define
-#         t = knots[m:m + order + 2] # knots
-#         b = BSpline.basis_element(t)
-
-#         inc = knots[m]
-#         while knots[m + order + 1] > inc:
-#             bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-#             inc += 1
-#     return bases
-
-# def initscales(ind, geo, chunks):
-#     args = packscaleargs(ind, geo, chunks)
-#     scales = runpar(_getscales, args, chunks)
-#     return scales
-
-
-
-# def decode(data, ind, mask, geo, algo, pos0=None):
-#     """Decodes the position and pixel footprints and their positions
-#     on the mask using coded measurement data."""
-
-#     # Number pf processes
-#     chunks = len(data)
-
-#     # Number of total pixels
-#     npix = 0
-#     for item in data:
-#         npix += item.shape[0]
-
-#     # # Initialize scalings
-#     # args = packscaleargs(ind, geo, chunks)
-#     # scales = runpar(_getscales, args, chunks)
-
-#     # # Initialize parameters
-#     # mask = initmask(mask)
-#     # sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
-
-#     # # Initial position
-#     # pos = initpos(chunks, npix, ind)
-#     # if pos0 is None:
-#     #     pos0 = pos
-#     # else:
-#     #     pos0 = collapse(pos0, pack(ind))
-#     #     pos0 = partition(pos0, 8)
-#     # bases = initbases(algo, sig)
-
-#     scales = initscales(ind, geo, chunks)
-#     mask = initmask(mask)
-#     sig = initsig(algo, chunks, npix, 1 / geo['mask']['resolution'])
-#     pos, pos0, lamda = initpos(chunks, npix, ind, pos0)
-#     bases = initbases(algo, sig)
-
-#     # Pack arguments as list and run
-#     args = packdecodeargs(data, mask, pos, sig, scales, pos0, algo, bases, chunks)
-#     results = runpar(_decode, args, chunks)
-
-#     # Unpack results and rescale them
-#     for m in range(chunks):
-#         pos[m] = results[m][0]
-#         sig[m] = results[m][1]
-#     return pos, sig
-
-
-# def packscaleargs(ind, geo, chunks):
-#     geo = [geo] * chunks
-#     return [ind, geo]
-
-
-# def unpackscaleargs(args):
-#     ind = args[0]
-#     geo = args[1]
-#     return ind, geo
-
-
-# def _getscales(args):
-#     ind, geo = unpackscaleargs(args)
-#     # Scaling factor
-#     factor = stretchfactor(
-#         geo['mask']['resolution'], 
-#         geo['scanner']['step'])
-        
-#     beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-#     scalesscan = np.ones((ind.shape[0], ), dtype='float32')
-#     for m in range(ind.shape[0]):
-#         p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
-#         alpha = np.arctan2(p0[0], p0[1]) #+25
-#         scalesscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-
-#     weight = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-#     scalesy = weight * np.ones((ind.shape[0], ), dtype='float32')
-
-#     weight = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-#     scalesz = weight * np.ones((ind.shape[0], ), dtype='float32')
-#     return scalesy * scalesz * scalesscan * factor * geo['scanner']['step']
-
-
-# def stretchlist(data, scales):
-#     data = data.copy()
-#     chunks = len(data)
-#     for m in range(chunks):
-#         data[m] = stretcharr(data[m], scales)
-#     return data
-        
-
-# def initdata(data, scales):
-#     return stretchlist(data, scales)
-
-
-# def initmask(mask):
-#     return invert(mask)
-
-
-# def initpos(chunks, npix, ind, pos0=None):
-#     pos = np.zeros((npix, ), dtype='float32')
-#     pos = partition(pos, chunks)
-#     if pos0 is None:
-#         pos0 = pos
-#         lamda = 0
-#     else:
-#         pos0 = collapse(pos0, pack(ind))
-#         pos0 = partition(pos0, 8)
-#     return pos, pos0, lamda
-
-
-# def initsig(algo, chunks, npix, factor):
-#     maxsize = algo['sig']['init']['maxsize']
-#     avgsize = algo['sig']['init']['avgsize']
-#     sig = np.zeros(maxsize, dtype='float32')
-#     first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
-#     sig[first:first+avgsize] = footprnt(avgsize)
-#     sig = stretcharr(sig, factor)
-#     sig = np.tile(sig, (npix, 1))
-#     return partition(sig, chunks)
-
-
-# def packdecodeargs(data, mask, pos, sig, scales, algo, bases, chunks):
-#     mask = [mask] * chunks
-#     algo = [algo] * chunks
-#     bases = [bases] * chunks
-#     return [data, mask, pos, sig, scales, algo, bases]
-
-
-# def unpackdecodeargs(args):
-#     data = args[0]
-#     mask = args[1]
-#     pos = args[2]
-#     sig = args[3]
-#     scales = args[4]
-#     algo = args[5]
-#     bases = args[6]
-#     return data, mask, pos, sig, scales, algo, bases
-
-
-# def stretchfactor(resolution, step):
-#     factor = step / resolution
-#     return factor
-
-
-
-
-# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
-#     from scipy import signal, ndimage, optimize, linalg
-#     import numpy as np
-#     import cold
-
-#     for p in range(data.shape[0]):
-#         _data = data[p]
-#         _data = cold.normalize(_data)
-#         _data = ndimage.zoom(_data, scale[p], order=1)
-#         _sig = sig[p]
-
-#         # position recon
-#         sim = signal.convolve(mask, _sig, 'same')
-#         costsize = sim.size - _data.size
-#         cost = np.zeros((costsize), dtype='float32')
-#         for m in range(costsize):
-#             if algo['pos']['method'] == 'lsqr':
-#                 cost[m] = np.sum(np.power(sim[m:m+_data.size] - _data, 2)) + lamda * np.sum(np.power(m - pos0[p], 2))
-#         try:
-#             _pos = np.where(cost.min() == cost)[0][0]
-#         except IndexError:
-#             pass
-
-#         # signal recon
-#         first = int((_sig.size - 1) / 2)
-#         last = int(mask.size + first - _sig.size - _data.size)
-#         if _pos > first and _pos < last:
-#             kernel = np.zeros((_data.size, _sig.size), dtype='float32')
-#             for m in range(_data.size):
-#                 begin = _pos - first + m - 1
-#                 end =  begin + _sig.size
-#                 kernel[m] = mask[begin:end]
-#             if algo['sig']['method'] == 'splines':
-#                 coefs = optimize.nnls(np.dot(kernel, bases), _data)[0][::-1]
-#                 _sig = np.dot(bases, coefs)
-#             if algo['sig']['method'] == 'nnls':
-#                 _sig = optimize.nnls(kernel, _data)[0][::-1]
-#             if algo['sig']['method'] == 'pinv':
-#                 ikernel = linalg.pinv(kernel, algo['sig']['init']['atol'])
-#                 _sig = np.dot(ikernel, _data)[::-1]
-#             _sig /= _sig.sum()
-#         else:
-#             _sig *= 0
-
-#         pos[p] = _pos
-#         sig[p] = _sig
-
-#     return pos, sig
-
-
-
-# def pixrecon(data, mask, pos, sig, scale, algo, pos0, lamda, bases):
-#     import cold
-#     import time
-#     from scipy import ndimage
-#     t = time.time()
-#     for m in range(data.shape[0]):
-#         _data = cold.normalize(data[m])
-#         _data = ndimage.zoom(_data, scale[m], order=1)
-#         _pos = cold.posrecon(_data, mask, sig[m], algo, pos0[m], lamda)
-#         _sig = cold.sigrecon(_data, mask, _pos, sig[m], algo, bases)
-#         pos[m] = _pos
-#         sig[m] = _sig
-#     elapsedtime = time.time() - t
-#     return pos, sig, elapsedtime
-
-
-# def baseskernel(size, order, scale):
-#     # Original grid [must be integers]
-#     grid = np.arange(0, size + 1, dtype='int')
-
-#     # Initial knots [must be integers]
-#     knots = np.arange(0, size + 1, scale, dtype='int')
-
-#     # Number of B-splines
-#     ncoefs = knots.size - order - 1
-
-#     bases = np.zeros((size, ncoefs))
-#     for m in range(ncoefs):
-
-#         # B-splines define
-#         t = knots[m:m + order + 2] # knots
-#         b = BSpline.basis_element(t)
-
-#         inc = knots[m]
-#         while knots[m + order + 1] > inc:
-#             bases[inc, m] = b.integrate(grid[inc], grid[inc + 1])
-#             inc += 1
-#     return bases
-
-
-# def footprnt(val):
-#     """Create a discrete signal from its parameters."""
-#     window = signal.windows.hann(int(val))
-#     window /= sum(window)
-#     return window
-
-
-# def plotresults(dat, ind, msk, pos, sig, scales, geo, algo):
-#     _dat = pack(dat)
-#     _ind = pack(ind)
-#     _pos = pack(pos)
-#     _sig = pack(sig)
-#     _scales = pack(scales)
-#     _msk = msk.copy()
-#     npix = _ind.shape[0]
-#     for m in range(npix):
-#         if _pos[m] > 0:
-#             if algo['pos']['method'] == 'lsqr':
-#                 plotlsqr(
-#                     _dat[m], _ind[m], _msk, 
-#                     _pos[m], _sig[m], _scales[m], m)
-#             logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
-
-
-# def plotlsqr(dat, ind, msk, pos, sig, scale, id):
-#     import matplotlib.pyplot as plt 
-#     from scipy import ndimage   
-#     # dat = ndimage.zoom(dat, scale)
-
-#     plt.figure(figsize=(8, 4))
-
-#     # dat = dat[0:120]
-#     dat = normalize(dat)
-#     dat = ndimage.zoom(dat, scale, order=1)
-#     _sig = sig / sig.max()
-
-#     msk = invert(msk)
-#     _dat = np.zeros(msk.shape)
-#     _dat[int(pos):int(pos+dat.size)] = dat
-
-#     plt.subplot(311)
-#     plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
-#     # plt.plot(msk[300:6060])
-#     # plt.plot(_dat[300:6060], 'r')
-#     plt.step(_sig, 'darkorange')
-#     plt.grid('on')
-#     plt.ylim((-0.5, 1.5))
-
-#     msk = signal.convolve(msk, sig, 'same')
-
-#     plt.subplot(312)
-#     plt.step(msk[300:6060], 'tab:blue')
-#     plt.step(_dat[300:6060], 'tab:red')
-#     plt.grid('on')
-#     plt.ylim((-0.5, 1.5))
-
-#     _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
-
-#     plt.subplot(313)
-#     plt.step(dat, 'tab:red')
-#     plt.step(_msk, 'tab:blue')
-#     plt.grid('on')
-#     plt.ylim((-0.5, 1.5))
-
-#     # plt.figure(figsize=(3, 1))
-#     # dat = dat[0:120]
-#     # dat = normalize(dat)
-#     # plt.plot(dat, 'r')
-#     # plt.grid('on')
-#     # plt.ylim((-0.5, 1.5))
-
-#     plt.tight_layout()
-#     if not os.path.exists('tmp/plot'):
-#         os.makedirs('tmp/plot')
-#     plt.savefig('tmp/plot/plot-' + str(id) + '.png', dpi=240)
-#     plt.close()
+    dat = normalize(dat)
+    dat = ndimage.zoom(dat, scl, order=1)
+    _sig = sig / sig.max()
+
+    msk = invert(msk)
+    _dat = np.zeros(msk.shape)
+    _dat[int(pos):int(pos+dat.size)] = dat
+
+    plt.subplot(311)
+    plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
+    plt.step(_sig, 'darkorange')
+    plt.grid('on')
+    plt.ylim((-0.5, 1.5))
+
+    msk = signal.convolve(msk, sig, 'same')
+
+    plt.subplot(312)
+    plt.step(msk[300:6060], 'tab:blue')
+    plt.step(_dat[300:6060], 'tab:red')
+    plt.grid('on')
+    plt.ylim((-0.5, 1.5))
+
+    _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
+
+    plt.subplot(313)
+    plt.step(dat, 'tab:red')
+    plt.step(_msk, 'tab:blue')
+    plt.grid('on')
+    plt.ylim((-0.5, 1.5))
+
+    plt.tight_layout()
+    if not os.path.exists('tmp/plot'):
+        os.makedirs('tmp/plot')
+    plt.savefig('tmp/plot/plot-' + str(id) + '.png', dpi=240)
+    plt.close()
 
 
 # def calibrate(data, ind, pos, sig, shift, geo):
