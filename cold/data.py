@@ -19,8 +19,7 @@ __docformat__ = 'restructuredtext en'
 def config(path):
     stream = open(path, 'r')
     pars = yaml.safe_load(stream)
-    return pars['file'], pars['geo'], pars['algo']
-
+    return pars['file'], pars['comp'], pars['geo'], pars['algo']
 
 
 def loadsingle(file, id=0):
@@ -35,27 +34,30 @@ def loadsingle(file, id=0):
     return values
 
 
-def load(file, collapsed=True, partitioned=True, index=None):
+def load(file, collapsed=True, index=None):
     """Loads Laue diffraction data."""
     if file['stacked'] is True:
         files = loadstack(file)
         if file['ext'] == 'h5':
-            values = loadh5files(files, file['h5']['key'])
+            vals = loadh5files(files, file['h5']['key'])
     else:
         if file['ext'] == 'h5':
             begin, end = file['range']
-            values = loadh5(file['path'], file['h5']['key'])[begin:end]
-            values = np.swapaxes(values, 0, 2)
-            values = np.swapaxes(values, 0, 1)
-            values = values.copy()
+            vals = loadh5(file['path'], file['h5']['key'])[begin:end]
+            vals = np.swapaxes(vals, 0, 2)
+            vals = np.swapaxes(vals, 0, 1)
+            vals = vals.copy()
     if index is None:
-        index = cherrypickpixels(values, file['threshold'], file['frame'])
+        index = cherrypickpixels(vals, file['threshold'], file['frame'])
     if collapsed is True:
-        values = collapse(values, index)
-    if partitioned is True:
-        values = partition(values, file['chunks'])
-        index = partition(index, file['chunks'])
-    return values, index
+        vals = collapse(vals, index)
+        datasize = vals.shape[0] * vals.shape[1] * 4e-6 # [MB]
+    else:
+        datasize = vals.shape[0] * vals.shape[1] * vals.shape[2] * 4e-6 # [MB]
+    logging.info(
+        "Data size: {}, {:.2f} MB".format(
+            vals.shape, datasize))
+    return vals, index
 
 
 def partition(data, n):
@@ -136,9 +138,9 @@ def tagpixels(data, threshold):
 
 def rejectpixels(frame, pixels):
     """Return an image by zeroing pixels outside a frame."""
-    pixels[0:frame[0], :] = 0
+    pixels[-1:frame[0], :] = 0
     pixels[frame[1]::, :] = 0
-    pixels[:, 0:frame[2]] = 0
+    pixels[:, -1:frame[2]] = 0
     pixels[:, frame[3]::] = 0
     return pixels
 
@@ -175,23 +177,15 @@ def expand(data, index, shape):
 
 
 def pack(data):
-
-    # Number pf processes
     chunks = len(data)
-
-    # Number of total pixels
     npix = 0
     for m in range(chunks):
         npix += data[m].shape[0]
-    
-    # Initialize array
     try:
         dy = data[m].shape[1]
         arr = np.zeros((npix, dy), dtype=data[0].dtype)
     except IndexError:
         arr = np.zeros((npix, ), dtype=data[0].dtype) 
-
-    # Write to array
     ind = 0
     for m in range(chunks):
         begin = ind
@@ -202,15 +196,8 @@ def pack(data):
 
 
 def saveimg(path, vals, inds, shape, swap=False):
-    _vals = packandexpand(vals, inds, shape)
+    _vals = expand(vals, inds, shape)
     save(path, _vals, swap)
-
-
-def packandexpand(vals, inds, shape):
-    _vals = pack(vals)
-    _inds = pack(inds)
-    _vals = expand(_vals, _inds, shape)
-    return _vals
 
 
 def saveplt(path, vals, grid):
@@ -238,7 +225,6 @@ def saveplt(path, vals, grid):
 def plotarr(path, arr, plots=False):
     import matplotlib.pyplot as plt
     import dxchange
-    arr = pack(arr)
     dxchange.write_tiff(arr, path)
     logging.info("Saved: " + str(path) + ".tiff")
     if plots is True:
