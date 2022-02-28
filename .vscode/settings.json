@@ -4,5 +4,6 @@
   ],
   "files.associations": {
     "math.h": "c"
-  }
+  },
+  "restructuredtext.languageServer.disabled": true
 }

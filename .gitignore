@@ -11,9 +11,11 @@ __pycache__/
 
 # Mac stuff
 .DS_Store
+.vscode
 
 # Testing scripts
-test.*
+test*
+scripts/
 trunk/
 tmp/
 cloud/
