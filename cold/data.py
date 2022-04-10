@@ -42,8 +42,8 @@ def load(file, collapsed=True, index=None):
             vals = loadh5files(files, file['h5']['key'])
     else:
         if file['ext'] == 'h5':
-            begin, end = file['range']
-            vals = loadh5(file['path'], file['h5']['key'])[begin:end]
+            begin, end, step = file['range']
+            vals = loadh5(file['path'], file['h5']['key'])[begin:step:end]
             vals = np.swapaxes(vals, 0, 2)
             vals = np.swapaxes(vals, 0, 1)
             vals = vals.copy()
@@ -58,6 +58,19 @@ def load(file, collapsed=True, index=None):
         "Data size: {}, {:.2f} MB".format(
             vals.shape, datasize))
     return vals, index
+
+
+def loads(file, index=None):
+    """Loads Laue diffraction data."""
+    numpixels = index.shape[0]
+    files = loadstack(file)
+    if file['ext'] == 'h5':
+        data = np.zeros((numpixels, len(files)), dtype='float32')
+        for m in range(len(files)):
+            vals = loadh5(files[m], file['h5']['key'])
+            for n in range(numpixels):
+                data[n, m] = vals[index[n, 0], index[n, 1]]
+    return data, index
 
 
 def partition(data, n):
@@ -82,10 +95,10 @@ def getfiles(path, ext):
 
 
 def cherrypickfiles(files, range=None):
-    begin, end = range
+    begin, end, step = range
     if range is None:
         range = [0, len(files)]
-    return files[begin:end]
+    return files[begin:end:step]
 
 
 def loadh5files(files, key):
@@ -138,9 +151,12 @@ def tagpixels(data, threshold):
 
 def rejectpixels(frame, pixels):
     """Return an image by zeroing pixels outside a frame."""
-    pixels[-1:frame[0], :] = 0
+    print (frame)
+    if frame[0] > 0:
+        pixels[0:frame[0], :] = 0
     pixels[frame[1]::, :] = 0
-    pixels[:, -1:frame[2]] = 0
+    if frame[2] > 0:
+        pixels[:, 0:frame[2]] = 0
     pixels[:, frame[3]::] = 0
     return pixels
 
@@ -200,20 +216,26 @@ def saveimg(path, vals, inds, shape, swap=False):
     save(path, _vals, swap)
 
 
-def saveplt(path, vals, grid):
+def saveplt(path, vals, grid, depw=None):
+    if depw is not None:
+        depw = depw / np.max(depw)
+    vals = vals / np.max(vals)
     import matplotlib.pyplot as plt
     p = Path(path).parents[0]
     if not os.path.exists(p):
         os.makedirs(p)
-    _vals = sum(vals)
     _grid = np.arange(*grid)
     plt.figure(figsize=[20, 5])
     plt.subplot(211)
-    plt.step(_grid, _vals)
+    plt.step(_grid, vals)
+    if depw is not None:
+        plt.step(_grid, depw)
     plt.grid()
     plt.subplot(212)
-    _vals[_vals < 1] = 0
-    plt.semilogy(_grid, _vals, drawstyle='steps')
+    vals[vals < 0.011] = 0
+    plt.semilogy(_grid, vals, drawstyle='steps')
+    if depw is not None:
+        plt.semilogy(_grid, depw, drawstyle='steps')
     plt.grid()
     plt.xlabel('[mm]')
     plt.tight_layout()

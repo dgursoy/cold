@@ -3,9 +3,10 @@
 import os
 import numpy as np
 import logging
-from scipy import signal, ndimage, optimize, interpolate
+from scipy import signal, ndimage, optimize, interpolate, linalg
 from scipy.interpolate import BSpline
-from cold import pack, partition, smooth, loadsingle, load
+from cold import pack, partition, loadsingle, load, saveplt
+from cold import mask as cmask
 from skimage.feature import blob_log
 import multiprocessing
 import warnings
@@ -19,17 +20,14 @@ __docformat__ = 'restructuredtext en'
 
 
 
-def decode(data, ind, mask, comp, geo, algo, debug=False):
+def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     """Decodes the position and pixel footprints and their positions
     on the mask using coded measurement data."""
 
-    # Initialize mask
-    mask = invert(mask)
-    logging.info('Initialized: Mask')
-
     # Initialize pos
-    pos = np.zeros((data.shape[0], ), dtype='float32')
-    logging.info('Initialized: Positions')
+    if pos is None:
+        pos = np.zeros((data.shape[0], ), dtype='float32')
+        logging.info('Initialized: Positions')
 
     # Initialize sig
     maxsize = algo['sig']['init']['maxsize']
@@ -44,19 +42,80 @@ def decode(data, ind, mask, comp, geo, algo, debug=False):
     sig = np.tile(sig, (data.shape[0], 1))
     logging.info('Initialized: Signal')
 
-    # Initialize scl
-    factor = geo['scanner']['step'] / geo['mask']['resolution']
-    beta = (90 - geo['scanner']['angle']) * np.pi / 180 
-    weighty = 1 / np.cos(geo['mask']['focus']['angley'] * np.pi / 180)
-    weightz = np.cos(geo['mask']['focus']['anglez'] * np.pi / 180)
-    sclscan = np.ones((ind.shape[0], ), dtype='float32')
+    # Initialize new scl
+    scl = np.ones((ind.shape[0], ), dtype='float32')
+    factor = (geo['scanner']['step'] /
+        geo['mask']['resolution'] * geo['mask']['stretch'])
+
+    # # Rotation vector (intrinsic-zyx)
+    # alpha = geo['mask']['focus']['anglez'] * np.pi / 180
+    # beta = geo['mask']['focus']['angley'] * np.pi / 180
+    # gamma = geo['mask']['focus']['anglex'] * np.pi / 180
+    # rotmat = np.zeros((3, 3), dtype='float32')
+    # rotmat[0, 0] = np.cos(alpha) * np.cos(beta)
+    # rotmat[0, 1] = np.cos(alpha) * np.sin(beta) * np.sin(gamma) - np.sin(alpha) * np.cos(gamma)
+    # rotmat[0, 2] = np.cos(alpha) * np.sin(beta) * np.cos(gamma) + np.sin(alpha) * np.sin(gamma)
+    # rotmat[1, 0] = np.sin(alpha) * np.cos(beta)
+    # rotmat[1, 1] = np.sin(alpha) * np.sin(beta) * np.sin(gamma) - np.cos(alpha) * np.cos(gamma)
+    # rotmat[1, 2] = np.sin(alpha) * np.sin(beta) * np.cos(gamma) + np.cos(alpha) * np.sin(gamma)
+    # rotmat[2, 0] = -np.sin(beta)
+    # rotmat[2, 1] = np.cos(beta) * np.sin(gamma)
+    # rotmat[2, 2] = np.cos(beta) * np.cos(gamma)
+
+    # Rotation vector (intrinsic-yzx)
+    alpha = geo['mask']['focus']['angley'] * np.pi / 180
+    beta = geo['mask']['focus']['anglez'] * np.pi / 180
+    gamma = geo['mask']['focus']['anglex'] * np.pi / 180
+    rotmat = np.zeros((3, 3), dtype='float32')
+    rotmat[0, 0] = np.cos(alpha) * np.cos(beta)
+    rotmat[0, 1] = np.sin(alpha) * np.sin(gamma) - np.cos(alpha) * np.cos(gamma) * np.sin(beta)
+    rotmat[0, 2] = np.cos(gamma) * np.sin(alpha) + np.cos(alpha) * np.sin(beta) * np.sin(gamma)
+    rotmat[1, 0] = np.sin(beta)
+    rotmat[1, 1] = np.cos(beta) * np.cos(gamma)
+    rotmat[1, 2] = -np.cos(beta) * np.sin(gamma)
+    rotmat[2, 0] = -np.cos(beta) * np.sin(alpha)
+    rotmat[2, 1] = np.cos(alpha) * np.sin(gamma) + np.cos(gamma) * np.sin(alpha) * np.sin(beta)
+    rotmat[2, 2] = np.cos(alpha) * np.cos(gamma) - np.sin(alpha) * np.sin(beta) * np.sin(gamma)
+
+    # Mask center step 1
+    mc1 = np.array([
+        geo['mask']['focus']['cenx'], 
+        geo['mask']['focus']['dist'],
+        geo['mask']['focus']['cenz']], dtype='float32')
+
+    # Scan direction
+    rodrot = rotmatrix(geo['scanner']['rot'])
+    direction = np.dot(rodrot, geo['scanner']['axis'])
+    mc2 = mc1 + direction
+
+    # # Sample origin
+    s0 = np.array([geo['source']['offset'], 0, 0], dtype='float32')
+
+    # Rotation of mask axes
+    mx = np.array([1, 0, 0], dtype='float32')
+    mz = np.array([0, 0, 1], dtype='float32')
+    mx = np.dot(rotmat, mx)
+    mz = np.dot(rotmat, mz) 
+
     for m in range(ind.shape[0]):
+        # Detector pixel position
         p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
-        alpha = np.arctan2(p0[0], p0[1]) #+25
-        sclscan[m] = np.sin(beta) + np.cos(beta) * np.tan(alpha)
-    scl = weighty * weightz * factor * geo['scanner']['step'] * sclscan
+
+        # Intersection of step 1
+        i1 = intersect2(p0, s0, mc1, mc1 + mx, mc1 + mz)
+
+        # Intersection of step 2
+        i2 = intersect2(p0, s0, mc2, mc2 + mx, mc2 + mz)
+
+        # Vector from i1 to i2
+        vec = i1 - i2 + direction
+
+        # Projection onto mask axis
+        step = np.dot(vec, mx) 
+        scl[m] = factor * step
     logging.info('Initialized: Scales')
 
+        
     # Initialize bases
     size = sig.shape[1]
     order = algo['sig']['order']
@@ -75,11 +134,11 @@ def decode(data, ind, mask, comp, geo, algo, debug=False):
     logging.info('Initialized: Spline bases')
 
     # Partitioning
-    ind = partition(ind, comp['workers'])
     pos = partition(pos, comp['workers'])
     sig = partition(sig, comp['workers'])
     scl = partition(scl, comp['workers'])
     data = partition(data, comp['workers'])
+    ind = partition(ind, comp['workers'])
     datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
     logging.info(
         "Data partitioned: " +
@@ -92,11 +151,11 @@ def decode(data, ind, mask, comp, geo, algo, debug=False):
 
     if comp['server'] == 'local':
         # Pack arguments as list and run   
-        mask = [mask] * comp['workers']
         algo = [algo] * comp['workers']
         base = [base] * comp['workers']
+        geo = [geo] * comp['workers']
 
-        args = [data, mask, pos, sig, scl, algo, base]
+        args = [data, pos, sig, scl, algo, base, geo, ind]
         results = runpar(_decode, args, comp['workers'])
 
         # Unpack results and rescale them
@@ -118,7 +177,7 @@ def decode(data, ind, mask, comp, geo, algo, debug=False):
         # Create a batch function tasks
         job = fxc.create_batch()
         for m in range(comp['workers']):
-            args = [data[m], mask, pos[m], sig[m], scl[m], algo, base]
+            args = [data[m], pos[m], sig[m], scl[m], algo, base, geo, ind]
             job.add(args, endpoint_id=comp['functionid'], function_id=fid)
 
         # Run the batch function tasks
@@ -146,26 +205,32 @@ def decode(data, ind, mask, comp, geo, algo, debug=False):
             pos[m] = batch_task[task]['result'][0]
             sig[m] = batch_task[task]['result'][1]
 
-    if debug is True:
-        plotresults(data, ind, mask, pos, sig, scl, geo, algo)
+    data = pack(data)
+    pos = pack(pos)
+    sig = pack(sig) 
+    scl = pack(scl) 
 
-    return pack(pos), pack(sig)
+    if debug is True:
+        plotresults(data, ind, geo, pos, sig, scl, algo[0])
+
+    return pos, sig, scl
 
 
 def _decode(args):
     data = args[0]
-    mask = args[1]
-    pos = args[2]
-    sig = args[3]
-    scl = args[4]
-    algo = args[5]
-    base = args[6]
+    pos = args[1]
+    sig = args[2]
+    scl = args[3]
+    algo = args[4]
+    base = args[5]
+    geo = args[6]
+    ind = args[7]
 
     from cold import pixdecode
     import logging
     for m in range(data.shape[0]):
         pos[m], sig[m] = pixdecode(
-            data[m], mask, pos[m], sig[m], scl[m], algo, base)
+            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m])
         logging.info('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
@@ -173,17 +238,19 @@ def _decode(args):
     return pos, sig
 
 
-def pixdecode(data, mask, pos, sig, scale, algo, bases):
+def pixdecode(data, pos, sig, scale, algo, bases, geo, ind):
     """The main function for decoding pixel data."""
+
+    msk = cmask.discmask(geo, ind)
     data = normalize(data)
     data = ndimage.zoom(data, scale, order=1)
-    pos = posrecon(data, mask, pos, sig, algo)
-    sig = sigrecon(data, mask, pos, sig, algo, bases)
+    pos = posrecon(data, msk, pos, sig, algo)
+    sig = sigrecon(data, msk, pos, sig, algo, bases)
     return pos, sig
 
 
-def posrecon(data, mask, pos, sig, algo):
-    sim = signal.convolve(mask, sig, 'same')
+def posrecon(data, msk, pos, sig, algo):
+    sim = signal.convolve(msk, sig, 'same')
     costsize = sim.size - data.size
     cost = np.zeros((costsize), dtype='float32')
     for m in range(costsize):
@@ -197,15 +264,15 @@ def posrecon(data, mask, pos, sig, algo):
     return pos
 
 
-def sigrecon(data, mask, pos, sig, algo, base):
+def sigrecon(data, msk, pos, sig, algo, base):
     first = int((sig.size - 1) / 2)
-    last = int(mask.size + first - sig.size - data.size)
+    last = int(msk.size + first - sig.size - data.size)
     if pos > first and pos < last:
         kernel = np.zeros((data.size, sig.size), dtype='float32')
         for m in range(data.size):
             begin = pos - first + m - 1
             end =  begin + sig.size
-            kernel[m] = mask[begin:end]
+            kernel[m] = msk[begin:end]
         if algo['sig']['method'] == 'splines':
             coefs = optimize.nnls(np.dot(kernel, base), data)[0][::-1]
             sig = np.dot(base, coefs)
@@ -341,26 +408,28 @@ def stretcharr(arr, factor, order=1):
     return arr / factor
 
 
-def plotresults(dat, ind, msk, pos, sig, scl, geo, algo):
-    _dat = pack(dat)
-    _ind = pack(ind)
-    _pos = pack(pos)
-    _sig = pack(sig)
-    _scl = pack(scl)
-    _msk = msk.copy()
-    npix = _ind.shape[0]
+def plotresults(dat, ind, geo, pos, sig, scl, algo):
+    npix = ind.shape[0]
     for m in range(npix):
-        if _pos[m] > 0:
+        msk = cmask.discmask(geo, ind[m])
+        if pos[m] > 0:
             if algo['pos']['method'] == 'lsqr':
                 plotlsqr(
-                    _dat[m], _ind[m], _msk, 
-                    _pos[m], _sig[m], _scl[m], m)
+                    dat[m], ind[m], msk, 
+                    pos[m], sig[m], scl[m], m)
             logging.info("Saved: tmp/plot/plot-" + str(m) + ".png")
 
 
 def plotlsqr(dat, ind, msk, pos, sig, scl, id):
     import matplotlib.pyplot as plt 
-    plt.figure(figsize=(8, 4))
+    import matplotlib 
+    matplotlib.rcParams.update({
+        "text.usetex": True, 
+        'font.size': 11, 
+        'font.family' : 'serif',
+        })
+
+    plt.figure(figsize=(6, 3))
     
     dat = normalize(dat)
     dat = ndimage.zoom(dat, scl, order=1)
@@ -372,110 +441,84 @@ def plotlsqr(dat, ind, msk, pos, sig, scl, id):
 
     plt.subplot(311)
     plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
-    plt.step(_sig, 'darkorange')
+    plt.step(_sig, 'darkorange', linewidth=1.3)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
     msk = signal.convolve(msk, sig, 'same')
 
     plt.subplot(312)
-    plt.step(msk[300:6060], 'tab:blue')
-    plt.step(_dat[300:6060], 'tab:red')
+    plt.step(msk[300:6060], 'tab:blue', linewidth=1.3)
+    plt.step(_dat[300:6060], 'tab:red', linewidth=0.6)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
     _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
 
     plt.subplot(313)
-    plt.step(dat, 'tab:red')
-    plt.step(_msk, 'tab:blue')
+    plt.step(_msk, 'tab:blue', linewidth=1.3)
+    plt.step(dat, 'tab:red', linewidth=0.6)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
-    plt.tight_layout()
+    plt.subplots_adjust(left=0.05, right=0.95, bottom=0.1, top=0.9, hspace=0.4)
     if not os.path.exists('tmp/plot'):
         os.makedirs('tmp/plot')
-    plt.savefig('tmp/plot/plot-' + str(id) + '.png', dpi=240)
+    filename = 'tmp/plot/plot-' + str(id) + '.png'
+    incr = 0
+    while os.path.exists(filename):
+        filename = 'tmp/plot/plot-' + str(id + incr) + '.png'
+        incr += 1
+    plt.savefig(filename, dpi=480)
     plt.close()
 
 
-# def calibrate(data, ind, pos, sig, shift, geo):
-#     # Number pf processes
-#     chunks = len(data)
+def calibrate(data, ind, pos, sig, geo, comp, shift=0):
+    # Initialize 
+    dist = np.arange(*geo['mask']['calibrate']['dist'])
 
-#     # Initialize 
-#     dist = np.arange(*geo['mask']['calibrate']['dist'])
+    # Wire reconstruction
+    import dxchange
+    lauw = dxchange.read_tiff('/Users/dgursoy/Data/Dina/wire_depth_reconstructions/pos2-wire.tiff')[0:210, ind[:, 0], ind[:, 1]]
+    depw = np.sum(lauw, axis=1)
+    print (depw.shape)
 
-#     maximum = 0
-#     optdist = 0
-#     for k in range(len(dist)):
-#         # Pack arguments as list and run
-#         geo['mask']['focus']['dist'] = dist[k]
-#         args = packcalibrateargs(data, ind, pos, sig, shift, geo, chunks)
-#         depth = runpar(_calibrate, args, chunks)
+    maximum = 0
+    optdist = 0
+    for k in range(len(dist)):
+        geo['mask']['focus']['dist'] = dist[k]
+        depth, laue = resolve(data, ind, pos, sig, geo, comp, shift=shift)
 
-#         # Save results
-#         saveplt('tmp/dep-dist/dep-' + str(k), depth, geo['source']['grid'])
-#         if np.sqrt(np.sum(np.power(depth, 2))) > maximum:
-#             maximum = np.sqrt(np.sum(np.power(depth, 2)))
-#             optdist = dist[k]
-#     logging.info("Optimum distance: " + str(optdist))
-#     return optdist
-
-
-# def packcalibrateargs(data, ind, pos, sig, shift, geo, chunks):
-#     geo = [geo] * chunks
-#     shift = [shift] * chunks
-#     return [data, ind, pos, sig, shift, geo]
+        # Save results
+        saveplt('tmp/dep-dist/dep-' + str(k), depth, geo['source']['grid'], depw)
+        if np.sqrt(np.sum(np.power(depth, 2))) > maximum:
+            maximum = np.sqrt(np.sum(np.power(depth, 2)))
+            optdist = dist[k]
+    logging.info("Optimum distance: " + str(optdist))
+    return optdist
 
 
-# def unpackcalibrateargs(args):
-#     data = args[0]
-#     ind = args[1]
-#     pos = args[2]
-#     sig = args[3]
-#     shift = args[4]
-#     geo = args[5]
-#     return data, ind, pos, sig, shift, geo
-
-
-# def _calibrate(args):
-#     # Unpack arguments
-#     data, ind, pos, sig, shift, geo = unpackcalibrateargs(args)
-
-#     # Source beam
-#     grid = np.arange(*geo['source']['grid'])
-
-#     # Initializations
-#     depth = np.zeros((len(grid), ), dtype='float32')
-
-#     # Number of pixels to be processed
-#     npix = data.shape[0]
-
-#     for m in range(npix):
-#         # Calculate the signal footprint along the beam
-#         fp = _footprint(data[m], ind[m], pos[m], sig[m], shift, geo)
-#         depth += fp
-#     return depth
-
-
-def resolve(data, ind, pos, sig, geo, shift=0):
+def resolve(data, ind, pos, sig, geo, comp, shift=0):
     """Resolves depth information."""
-    # Number pf processes
-    chunks = len(data)
 
     # Pack arguments as list and run
-    shift = [shift] * chunks
-    geo = [geo] * chunks
+    pos = partition(pos, comp['workers'])
+    sig = partition(sig, comp['workers'])
+    data = partition(data, comp['workers'])
+    ind = partition(ind, comp['workers'])
+    shift = [shift] * comp['workers']
+    geo = [geo] * comp['workers']
     args = [data, ind, pos, sig, shift, geo]
-    results = runpar(_resolve, args, chunks)
+    results = runpar(_resolve, args, comp['workers'])
 
     # Unpack results
-    depth = [None] * chunks
-    laue = [None] * chunks
-    for m in range(chunks):
+    depth = [None] * comp['workers']
+    laue = [None] * comp['workers']
+    for m in range(comp['workers']):
         depth[m] = results[m][0]
         laue[m] = results[m][1]
+    depth = sum(depth)
+    laue = pack(laue)
     return depth, laue
 
 
@@ -505,71 +548,94 @@ def _resolve(args):
     return depth, laue
 
 
-def _rotpoint2d(x, y, cx, cy, angle):
-    px = x - cx
-    py = y - cy
-    xnew = px * np.cos(angle) - py * np.sin(angle)
-    ynew = px * np.sin(angle) + py * np.cos(angle)
-    px = xnew + cx
-    py = ynew + cy
-    return px, py
-
-
-def rotpoint2d(x, y, angle):
-    xnew = x * np.cos(angle) - y * np.sin(angle)
-    ynew = x * np.sin(angle) + y * np.cos(angle)
-    return xnew, ynew
-
-
 def _footprint(dat, ind, pos, sig, shift, geo):
     # Detector pixel position
     p0 = pix2pos(ind, geo) # [<->, dis2det, v^]
 
     # Source beam
-    s1 = np.array([-100, 
-        -geo['source']['offset'] * 0.5, 0], dtype='float32')
-    s2 = np.array([100, 
-        geo['source']['offset'] * 0.5, 0], dtype='float32')
+    s1 = np.array([-1, -0.0068401066731 * 0.5, 0], dtype='float32')
+    s2 = np.array([1, 0.0068401066731 * 0.5, 0], dtype='float32')
 
     # Scaling of positions and signals
-    pos *= geo['mask']['resolution']
-    sig = ndimage.zoom(sig, geo['mask']['resolution'], order=1)
+    pos *= geo['mask']['resolution'] * 1e-3
+    mask = cmask.discmask(geo, ind)
+    masksize = mask.size * geo['mask']['resolution'] * 1e-3
+
+    # # Rotation vector (intrinsic-zyx)
+    # alpha = geo['mask']['focus']['anglez'] * np.pi / 180
+    # beta = geo['mask']['focus']['angley'] * np.pi / 180
+    # gamma = geo['mask']['focus']['anglex'] * np.pi / 180
+    # rotmat = np.zeros((3, 3), dtype='float32')
+    # rotmat[0, 0] = np.cos(alpha) * np.cos(beta)
+    # rotmat[0, 1] = np.cos(alpha) * np.sin(beta) * np.sin(gamma) - np.sin(alpha) * np.cos(gamma)
+    # rotmat[0, 2] = np.cos(alpha) * np.sin(beta) * np.cos(gamma) + np.sin(alpha) * np.sin(gamma)
+    # rotmat[1, 0] = np.sin(alpha) * np.cos(beta)
+    # rotmat[1, 1] = np.sin(alpha) * np.sin(beta) * np.sin(gamma) - np.cos(alpha) * np.cos(gamma)
+    # rotmat[1, 2] = np.sin(alpha) * np.sin(beta) * np.cos(gamma) + np.cos(alpha) * np.sin(gamma)
+    # rotmat[2, 0] = -np.sin(beta)
+    # rotmat[2, 1] = np.cos(beta) * np.sin(gamma)
+    # rotmat[2, 2] = np.cos(beta) * np.cos(gamma)
+
+    # Rotation vector (intrinsic-yzx)
+    alpha = geo['mask']['focus']['angley'] * np.pi / 180
+    beta = geo['mask']['focus']['anglez'] * np.pi / 180
+    gamma = geo['mask']['focus']['anglex'] * np.pi / 180
+    rotmat = np.zeros((3, 3), dtype='float32')
+    rotmat[0, 0] = np.cos(alpha) * np.cos(beta)
+    rotmat[0, 1] = np.sin(alpha) * np.sin(gamma) - np.cos(alpha) * np.cos(gamma) * np.sin(beta)
+    rotmat[0, 2] = np.cos(gamma) * np.sin(alpha) + np.cos(alpha) * np.sin(beta) * np.sin(gamma)
+    rotmat[1, 0] = np.sin(beta)
+    rotmat[1, 1] = np.cos(beta) * np.cos(gamma)
+    rotmat[1, 2] = -np.cos(beta) * np.sin(gamma)
+    rotmat[2, 0] = -np.cos(beta) * np.sin(alpha)
+    rotmat[2, 1] = np.cos(alpha) * np.sin(gamma) + np.cos(gamma) * np.sin(alpha) * np.sin(beta)
+    rotmat[2, 2] = np.cos(alpha) * np.cos(gamma) - np.sin(alpha) * np.sin(beta) * np.sin(gamma)
 
     # Mask position
-    xx = geo['mask']['focus']['cenx'] + shift
-    yy = geo['mask']['focus']['dist']
-    zz = geo['mask']['focus']['cenz']
+    mc = np.array([
+        geo['mask']['focus']['cenx'], 
+        geo['mask']['focus']['dist'],
+        geo['mask']['focus']['cenz']], dtype='float32') 
+
+    # Scan direction
+    rodrot = rotmatrix(geo['scanner']['rot'])
+    direction = np.dot(rodrot, geo['scanner']['axis'])
 
     # Points on the mask for ray tracing
-    p1 = np.array([-pos * 1e-3 + shift, yy, 100], dtype='float32')
-    p2 = np.array([-pos * 1e-3 + shift, yy, -100], dtype='float32')
+    p1 = np.array([0.5 * masksize - pos, 0, 100], dtype='float32')
+    p2 = np.array([0.5 * masksize - pos, 0, -100], dtype='float32')
+    p1 = np.dot(rotmat, p1) + mc
+    p2 = np.dot(rotmat, p2) + mc
+    p1 = p1 + direction * shift
+    p2 = p2 + direction * shift
 
-    # Rotate a rigid body
-    anglex = geo['mask']['focus']['anglex'] * np.pi / 180
-    angley = geo['mask']['focus']['angley'] * np.pi / 180
-    anglez = geo['mask']['focus']['anglez'] * np.pi / 180
-    p1[1], p1[2] = _rotpoint2d(p1[1], p1[2], yy, zz, anglex)
-    p2[1], p2[2] = _rotpoint2d(p2[1], p2[2], yy, zz, anglex)
-    p1[0], p1[2] = _rotpoint2d(p1[0], p1[2], xx, zz, angley)
-    p2[0], p2[2] = _rotpoint2d(p2[0], p2[2], xx, zz, angley)
-    p1[0], p1[1] = _rotpoint2d(p1[0], p1[1], xx, yy, anglez)
-    p2[0], p2[1] = _rotpoint2d(p2[0], p2[1], xx, yy, anglez)
-
-    intersection = intersect(s1, s2, p0, p1, p2)
-
+    # Intersection of the source and the plane 
+    intersectionsource1 = intersect2(s1, s2, p0, p1, p2)
+    intersectionx = intersectionsource1[0]
+    
+    # Magnification
+    _p1 = p1 + direction * geo['scanner']['step']
+    _p2 = p2 + direction * geo['scanner']['step']
+    intersectionsource2 = intersect2(s1, s2, p0, _p1, _p2)
+    
     # Discrete grid along the source beam
     gr = geo['source']['grid']
     grid = np.arange(gr[0], gr[1], gr[2])
     extgrid = np.arange(gr[0] - 1.0, gr[1] + 1.0, gr[2])
 
-    # Demagnification of the footprint
-    _sig = footprintcor(geo, sig)
+    # Stretch factor for magnification
+    factor = np.sqrt(np.sum(np.power(intersectionsource2 - intersectionsource1, 2)))
+    _sig = stretcharr(sig, factor * geo['mask']['resolution'] / (1e3 * gr[2]), order=1)
+
+    # Index along the beam
+    dx = np.argmin(np.abs(extgrid - intersectionx))
+
+    # Adjustment based on intersectionx
+    sx = (intersectionx / gr[2] - np.round(intersectionx / gr[2]))
+    _sig = ndimage.shift(_sig, sx, order=1)
 
     # Initialize fine footprint
     fp = np.zeros((len(extgrid), ), dtype='float32')
-
-    # Index along the beam
-    dx = np.argmin(np.abs(extgrid - intersection))
     first = int((_sig.size - 1) / 2)
     if extgrid[dx] > gr[0] and extgrid[dx] < gr[1]:
         _fp = _sig * (dat.max() - 2 * np.sqrt(dat.max()))
@@ -586,13 +652,12 @@ def footprintcor(geo, sig):
     p = geo['detector']['size'][0] / geo['detector']['shape'][0] * 1e3 # 200
     d = geo['mask']['focus']['dist'] # 1.17
     c = geo['detector']['pos'][2] # 513.140
-    b = c - d # 511.969
     try:
         a = (sig.size * c - p * d) / (p - sig.size)
         factor =  p * a / (a + c) / sig.size  / (1e3 * gr[2])
     except ZeroDivisionError:
         factor = 1
-    return stretcharr(sig, factor, order=1)
+    return stretcharr(sig, factor * geo['mask']['resolution'], order=1)
 
 
 def intersect(s1, s2, p0, p1, p2):
@@ -605,21 +670,33 @@ def intersect(s1, s2, p0, p1, p2):
     return intersect
 
 
+def intersect2(s1, s2, p0, p1, p2):
+    s12 = (s2 - s1) / np.linalg.norm(s2 - s1)
+    p01 = (p1 - p0) / np.linalg.norm(p1 - p0) # vector A
+    p02 = (p2 - p0) / np.linalg.norm(p2 - p0) # vector B
+    vec = np.cross(p01, p02) # Normal vector
+    t = np.dot(vec, s1 - p0) / np.dot(-s12, vec)
+    intersect = s1 + t * s12
+    return intersect
+
+
 def pix2pos(index, geo):
     """Returns the coordinate of a given detector pixel index."""
     dx = geo['detector']['shape'][0]
     dy = geo['detector']['shape'][1]    
     sx = geo['detector']['size'][0]
     sy = geo['detector']['size'][1]
-    xp = (index[0] - 0.5 * (dx - 1)) * sx / dx
-    yp = (index[1] - 0.5 * (dy - 1)) * sy / dy
+    xp = (index[1] - 0.5 * (dx - 1)) * sx / dx
+    yp = (index[0] - 0.5 * (dy - 1)) * sy / dy
     zp = 0
     xp += geo['detector']['pos'][0]
     yp += geo['detector']['pos'][1]
     zp += geo['detector']['pos'][2]
     xpoint = np.array([xp, yp, zp])
     rodrot = rotmatrix(geo['detector']['rot'])
-    return np.dot(rodrot, xpoint)
+    point = np.dot(rodrot, xpoint)
+    # return np.array([point[0], point[1], point[2]], dtype='float32')
+    return np.array([point[2], point[1], -point[0]], dtype='float32')
 
 
 def rotmatrix(rotation):

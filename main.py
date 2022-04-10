@@ -2,7 +2,7 @@
 
 import cold
 import fire
-
+import dxchange
 
 def main(path, debug=False):
     """Runs the reconstruction workflow given parameters 
@@ -20,20 +20,17 @@ def main(path, debug=False):
     -------
         None
     """
-
-    file, geo, algo = cold.config(path)
+    file, comp, geo, algo = cold.config(path)
     data, ind = cold.load(file)
     mask = cold.mask(geo['mask'])
-    pos, sig = cold.decode(data, mask, geo, algo)
-    dep, lau = cold.resolve(data, ind, pos, sig, geo)
+    pos, sig, scl = cold.decode(data, ind, comp, geo, algo, debug=debug)
+    dep, lau = cold.resolve(data, ind, pos, sig, geo, comp)
 
     shape = geo['detector']['shape']
     cold.saveimg('tmp/pos/pos', pos, ind, shape)
     cold.plotarr('tmp/sig/sig', sig, plots=False)
-    cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
     cold.saveplt('tmp/dep/dep', dep, geo['source']['grid'])
-    if debug is True:
-        cold.plotresults(data, ind, mask, pos, sig, geo, algo)
+    cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
 
 if __name__ == '__main__':
     fire.Fire(main)
