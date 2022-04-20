@@ -209,9 +209,10 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     pos = pack(pos)
     sig = pack(sig) 
     scl = pack(scl) 
+    ind = pack(ind) 
 
     if debug is True:
-        plotresults(data, ind, geo, pos, sig, scl, algo[0])
+        plotresults(data, ind, geo[0], pos, sig, scl, algo[0])
 
     return pos, sig, scl
 
@@ -230,7 +231,7 @@ def _decode(args):
     import logging
     for m in range(data.shape[0]):
         pos[m], sig[m] = pixdecode(
-            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m])
+            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], m)
         logging.info('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
@@ -238,14 +239,14 @@ def _decode(args):
     return pos, sig
 
 
-def pixdecode(data, pos, sig, scale, algo, bases, geo, ind):
+def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ix):
     """The main function for decoding pixel data."""
 
     msk = cmask.discmask(geo, ind)
     data = normalize(data)
     data = ndimage.zoom(data, scale, order=1)
     pos = posrecon(data, msk, pos, sig, algo)
-    sig = sigrecon(data, msk, pos, sig, algo, bases)
+    sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
     return pos, sig
 
 
@@ -264,7 +265,7 @@ def posrecon(data, msk, pos, sig, algo):
     return pos
 
 
-def sigrecon(data, msk, pos, sig, algo, base):
+def sigrecon(data, msk, pos, sig, algo, base, ix):
     first = int((sig.size - 1) / 2)
     last = int(msk.size + first - sig.size - data.size)
     if pos > first and pos < last:
@@ -435,13 +436,12 @@ def plotlsqr(dat, ind, msk, pos, sig, scl, id):
     dat = ndimage.zoom(dat, scl, order=1)
     _sig = sig / sig.max()
 
-    msk = invert(msk)
     _dat = np.zeros(msk.shape)
     _dat[int(pos):int(pos+dat.size)] = dat
 
     plt.subplot(311)
     plt.title(str(id) + ' ' + ' ind=' + str(ind) + ' pos=' + str(pos))
-    plt.step(_sig, 'darkorange', linewidth=1.3)
+    plt.step(_sig, 'orangered', linewidth=1.3)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
@@ -473,15 +473,9 @@ def plotlsqr(dat, ind, msk, pos, sig, scl, id):
     plt.close()
 
 
-def calibrate(data, ind, pos, sig, geo, comp, shift=0):
+def calibrate(data, ind, pos, sig, geo, comp, shift=0, depw=None):
     # Initialize 
     dist = np.arange(*geo['mask']['calibrate']['dist'])
-
-    # Wire reconstruction
-    import dxchange
-    lauw = dxchange.read_tiff('/Users/dgursoy/Data/Dina/wire_depth_reconstructions/pos2-wire.tiff')[0:210, ind[:, 0], ind[:, 1]]
-    depw = np.sum(lauw, axis=1)
-    print (depw.shape)
 
     maximum = 0
     optdist = 0

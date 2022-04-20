@@ -151,7 +151,6 @@ def tagpixels(data, threshold):
 
 def rejectpixels(frame, pixels):
     """Return an image by zeroing pixels outside a frame."""
-    print (frame)
     if frame[0] > 0:
         pixels[0:frame[0], :] = 0
     pixels[frame[1]::, :] = 0
@@ -218,7 +217,9 @@ def saveimg(path, vals, inds, shape, swap=False):
 
 def saveplt(path, vals, grid, depw=None):
     if depw is not None:
-        depw = depw / np.max(depw)
+        depw = depw - np.min(depw)
+        depw = depw / np.max(depw) 
+        # depw[depw > 1] = 1
     vals = vals / np.max(vals)
     import matplotlib.pyplot as plt
     p = Path(path).parents[0]
@@ -233,9 +234,9 @@ def saveplt(path, vals, grid, depw=None):
     plt.grid()
     plt.subplot(212)
     vals[vals < 0.011] = 0
-    plt.semilogy(_grid, vals, drawstyle='steps')
     if depw is not None:
         plt.semilogy(_grid, depw, drawstyle='steps')
+    plt.semilogy(_grid, vals, drawstyle='steps')
     plt.grid()
     plt.xlabel('[mm]')
     plt.tight_layout()
