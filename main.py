@@ -21,16 +21,19 @@ def main(path, debug=False):
         None
     """
     file, comp, geo, algo = cold.config(path)
-    data, ind = cold.load(file)
-    mask = cold.mask(geo['mask'])
-    pos, sig, scl = cold.decode(data, ind, comp, geo, algo, debug=debug)
-    dep, lau = cold.resolve(data, ind, pos, sig, geo, comp)
+    for m in range(441):
+        file['range'] = [m * 201, 201 * (m + 1), 1]
+        data, ind = cold.load(file)
+        pos, sig, scl = cold.decode(data, ind, comp, geo, algo, debug=debug)
+        # dist = cold.calibrate(data, ind, pos, sig, geo, comp)
+        # geo['mask']['focus']['dist'] = dist
+        dep, lau = cold.resolve(data, ind, pos, sig, geo, comp)
 
-    shape = geo['detector']['shape']
-    cold.saveimg('tmp/pos/pos', pos, ind, shape)
-    cold.plotarr('tmp/sig/sig', sig, plots=False)
-    cold.saveplt('tmp/dep/dep', dep, geo['source']['grid'])
-    cold.saveimg('tmp/lau/lau', lau, ind, shape, swap=True)
+        shape = geo['detector']['shape']
+        cold.saveimg('tmp/pos/pos-' + str(m), pos, ind, shape)
+        cold.plotarr('tmp/sig/sig-' + str(m), sig, plots=False)
+        cold.saveplt('tmp/dep/dep-' + str(m), dep, geo['source']['grid'])
+        cold.saveimg('tmp/lau/lau-' + str(m), lau, ind, shape, swap=True)
 
 if __name__ == '__main__':
     fire.Fire(main)
