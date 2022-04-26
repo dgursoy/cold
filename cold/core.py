@@ -86,7 +86,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     # Scan direction
     rodrot = rotmatrix(geo['scanner']['rot'])
     direction = np.dot(rodrot, geo['scanner']['axis'])
-    mc2 = mc1 + direction
+    mc2 = mc1 + direction * geo['scanner']['step']
 
     # # Sample origin
     s0 = np.array([geo['source']['offset'], 0, 0], dtype='float32')

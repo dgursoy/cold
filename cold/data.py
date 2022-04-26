@@ -122,9 +122,11 @@ def loadh5(file, key):
     return value
 
 
-def save(path, data, swap=False):
+def save(path, data, frame=None, swap=False):
     """Saves Laue diffraction data to file."""
     import dxchange
+    if frame is not None:
+        data = data[frame[0]:frame[1],frame[2]:frame[3]]
     if swap is True:
         data = np.swapaxes(data, 0, 2)
         data = np.swapaxes(data, 1, 2)
@@ -210,9 +212,9 @@ def pack(data):
     return arr
 
 
-def saveimg(path, vals, inds, shape, swap=False):
+def saveimg(path, vals, inds, shape, frame=None, swap=False):
     _vals = expand(vals, inds, shape)
-    save(path, _vals, swap)
+    save(path, _vals, frame, swap)
 
 
 def saveplt(path, vals, grid, depw=None):
@@ -220,7 +222,7 @@ def saveplt(path, vals, grid, depw=None):
         depw = depw - np.min(depw)
         depw = depw / np.max(depw) 
         # depw[depw > 1] = 1
-    vals = vals / np.max(vals)
+    # vals = vals / np.max(vals)
     import matplotlib.pyplot as plt
     p = Path(path).parents[0]
     if not os.path.exists(p):
@@ -232,13 +234,15 @@ def saveplt(path, vals, grid, depw=None):
     if depw is not None:
         plt.step(_grid, depw)
     plt.grid()
+    # plt.ylim([0, 100000])
     plt.subplot(212)
-    vals[vals < 0.011] = 0
+    # vals[vals < 0.011] = 0
     if depw is not None:
         plt.semilogy(_grid, depw, drawstyle='steps')
     plt.semilogy(_grid, vals, drawstyle='steps')
     plt.grid()
     plt.xlabel('[mm]')
+    # plt.ylim([0, 100000])
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
