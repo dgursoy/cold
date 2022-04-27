@@ -6,8 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
-#  Config files
+# Folders for analysis scripts
+/shells/*.sh
 /configs/*.yml
+/scripts/*.py
 
 # Mac stuff
 .DS_Store
@@ -15,10 +17,10 @@ __pycache__/
 
 # Testing scripts
 test*
-scripts/
 trunk/
 tmp/
 cloud/
+script*
 
 # Distribution / packaging
 .Python
