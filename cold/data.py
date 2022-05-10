@@ -39,6 +39,77 @@ def load(file, collapsed=True, index=None):
     if file['stacked'] is True:
         files = loadstack(file)
         if file['ext'] == 'h5':
+            vals = loadh5files2(files, file['h5']['key'], file['frame'])
+    else:
+        if file['ext'] == 'h5':
+            begin, end, step = file['range']
+            vals = loadh5(file['path'], file['h5']['key'])[begin:step:end]
+            vals = np.swapaxes(vals, 0, 2)
+            vals = np.swapaxes(vals, 0, 1)
+            vals = vals.copy()
+    if index is None:
+        index = cherrypickpixels2(vals, file['threshold'], file['frame'])
+    if collapsed is True:
+        vals = collapse(vals, index)
+        datasize = vals.shape[0] * vals.shape[1] * 4e-6 # [MB]
+    else:
+        datasize = vals.shape[0] * vals.shape[1] * vals.shape[2] * 4e-6 # [MB]
+    logging.info(
+        "Data size: {}, {:.2f} MB".format(
+            vals.shape, datasize))
+    index[0] += file['frame'][0]
+    index[1] += file['frame'][2]
+    return vals, index
+
+
+def loadh5files2(files, key, frame):
+    data = initdata2(files, key, frame)
+    for m in range(len(files)):
+        data[:, :, m] = loadh52(files[m], key, frame)
+    return data
+
+def initdata2(files, key, frame):
+    img = loadh52(files[0], key, frame)
+    nx, ny = img.shape
+    return np.zeros((nx, ny, len(files)), dtype='float32')
+
+
+def loadh52(file, key, frame):
+    import h5py
+    f = h5py.File(file, 'r')
+    value = f[key][frame[0]:frame[1], frame[2]:frame[3]]
+    logging.info("Loaded: " + str(file) + "Frame: " + str(frame))
+    return value
+
+
+def cherrypickpixels2(data, threshold, frame):
+    """Returns pixel indices above a threshold and inside a frame."""
+    pixels = tagpixels2(data, threshold)
+    index = getindices2(pixels, frame)
+    return index
+
+
+def tagpixels2(data, threshold):
+    """Return a binary image that shows tagged pixels."""
+    img = np.mean(data, axis=2)
+    pixels = np.zeros(img.shape, dtype='int16')
+    pixels[img >= threshold] = 1
+    pixels[img == 65535] = 0
+    return pixels
+
+
+def getindices2(pixels, frame):
+    """Computes the indices for tagged pixels from a binary image."""
+    ix, iy = np.where(pixels == 1)
+    index = np.array([ix, iy], dtype='int32').T
+    return index
+
+
+def load2(file, collapsed=True, index=None):
+    """Loads Laue diffraction data."""
+    if file['stacked'] is True:
+        files = loadstack(file)
+        if file['ext'] == 'h5':
             vals = loadh5files(files, file['h5']['key'])
     else:
         if file['ext'] == 'h5':
@@ -234,7 +305,7 @@ def saveplt(path, vals, grid, depw=None):
     if depw is not None:
         plt.step(_grid, depw)
     plt.grid()
-    # plt.ylim([0, 100000])
+    # plt.ylim([0, 17000])
     plt.subplot(212)
     # vals[vals < 0.011] = 0
     if depw is not None:
@@ -242,7 +313,7 @@ def saveplt(path, vals, grid, depw=None):
     plt.semilogy(_grid, vals, drawstyle='steps')
     plt.grid()
     plt.xlabel('[mm]')
-    # plt.ylim([0, 100000])
+    # plt.ylim([0, 17000])
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
