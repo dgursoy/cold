@@ -57,8 +57,8 @@ def load(file, collapsed=True, index=None):
     logging.info(
         "Data size: {}, {:.2f} MB".format(
             vals.shape, datasize))
-    index[0] += file['frame'][0]
-    index[1] += file['frame'][2]
+    index[:, 0] += file['frame'][0]
+    index[:, 1] += file['frame'][2]
     return vals, index
 
 
