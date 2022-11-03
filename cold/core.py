@@ -133,21 +133,27 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
             inc += 1
     logging.info('Initialized: Spline bases')
 
-    # Partitioning
-    pos = partition(pos, comp['workers'])
-    sig = partition(sig, comp['workers'])
-    scl = partition(scl, comp['workers'])
-    data = partition(data, comp['workers'])
-    ind = partition(ind, comp['workers'])
-    datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
-    logging.info(
-        "Data partitioned: " +
-        "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
-            comp['workers'], 
-            data[0].shape, 
-            datasize,
-            datasize * comp['workers'] * 1e-3))
-    logging.info('Partitioning completed')
+    if comp['server'] == 'single':
+        results = _decode([data, pos, sig, scl, algo, base, geo, ind])
+    
+    else:
+        # Partitioning
+        pos = partition(pos, comp['workers'])
+        sig = partition(sig, comp['workers'])
+        scl = partition(scl, comp['workers'])
+        data = partition(data, comp['workers'])
+        ind = partition(ind, comp['workers'])
+        datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
+        logging.info(
+            "Data partitioned: " +
+            "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
+                comp['workers'], 
+                data[0].shape, 
+                datasize,
+                datasize * comp['workers'] * 1e-3))
+        logging.info('Partitioning completed')
+
+
 
     if comp['server'] == 'local':
         # Pack arguments as list and run   
@@ -397,6 +403,8 @@ def runpar(myfunc, args, nproc):
     pool.close()
     pool.join()
     return results
+
+
 
 
 def stretcharr(arr, factor, order=1):
