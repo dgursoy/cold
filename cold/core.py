@@ -211,11 +211,12 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
             pos[m] = batch_task[task]['result'][0]
             sig[m] = batch_task[task]['result'][1]
 
-    data = pack(data)
-    pos = pack(pos)
-    sig = pack(sig) 
-    scl = pack(scl) 
-    ind = pack(ind) 
+    if comp['server'] != 'single':
+        data = pack(data)
+        pos = pack(pos)
+        sig = pack(sig) 
+        scl = pack(scl) 
+        ind = pack(ind) 
 
     if debug is True:
         plotresults(data, ind, geo[0], pos, sig, scl, algo[0])
