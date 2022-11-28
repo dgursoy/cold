@@ -23,7 +23,7 @@ __docformat__ = 'restructuredtext en'
 
 
 
-def decode(data, ind, comp, geo, algo, pos=None, debug=False):
+def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
     """Decodes the position and pixel footprints and their positions
     on the mask using coded measurement data."""
 
@@ -137,7 +137,11 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     logging.info('Initialized: Spline bases')
 
     if comp['server'] == 'single':
-        results = _decode([data, pos, sig, scl, algo, base, geo, ind])
+        if use_gpu:
+            results = _decode_gpu([data, pos, sig, scl, algo, base, geo, ind, use_gpu])
+        else:
+            results = _decode([data, pos, sig, scl, algo, base, geo, ind, use_gpu])
+
     
     else:
         # Partitioning
@@ -237,6 +241,52 @@ def _decode(args):
     geo = args[6]
     ind = args[7]
 
+    from cold import pixdecode
+    import logging
+    for m in range(data.shape[0]):
+        pos[m], sig[m] = pixdecode(
+            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], m)
+        logging.info('Pixel decoded: ' +
+            str(m) + '/' + str(data.shape[0] - 1) + 
+            ' pos=' + str(pos[m].squeeze()) + 
+            ' scales=' + str(scl[m].squeeze()))
+    return pos, sig
+
+def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ix):
+    """The main function for decoding pixel data."""
+
+    msk = cmask.discmask(geo, ind)
+    data = normalize(data)
+    data = ndimage.zoom(data, scale, order=1)
+    pos = posrecon(data, msk, pos, sig, algo)
+    sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
+    return pos, sig
+
+
+def posrecon(data, msk, pos, sig, algo):
+    sim = signal.convolve(msk, sig, 'same')
+    costsize = sim.size - data.size
+    cost = np.zeros((costsize), dtype='float32')
+    for m in range(costsize):
+        if algo['pos']['method'] == 'lsqr':
+            cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
+                algo['pos']['regpar'] * np.sum(np.power(m - pos, 2)))
+    try:
+        pos = np.where(cost.min() == cost)[0][0]
+    except IndexError:
+        pass
+    return pos
+
+def _decode_gpu(args):
+    data = args[0]
+    pos = args[1]
+    sig = args[2]
+    scl = args[3]
+    algo = args[4]
+    base = args[5]
+    geo = args[6]
+    ind = args[7]
+
     import logging
     full_sim_stack = []
     full_data = []
@@ -273,7 +323,6 @@ def _decode(args):
     for i in range(data.shape[0]):
         pos[i] = np.where(full_costs[i].min() == full_costs[i])[0][0]
         sig[i] = sigrecon(data[i], msk[i], pos[i], sig[i], algo, base, i)
-
 
     return pos, sig
 
