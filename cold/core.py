@@ -12,6 +12,9 @@ import multiprocessing
 import warnings
 warnings.filterwarnings('ignore')
 
+import jax.numpy as jnp
+import jax
+
 __author__ = "Doga Gursoy"
 __copyright__ = "Copyright (c) 2021, UChicago Argonne, LLC."
 __docformat__ = 'restructuredtext en'
@@ -239,7 +242,7 @@ def _decode(args):
     for m in range(data.shape[0]):
         pos[m], sig[m] = pixdecode(
             data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], m)
-        logging.info('Pixel decoded: ' +
+        print('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
@@ -252,19 +255,43 @@ def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ix):
     msk = cmask.discmask(geo, ind)
     data = normalize(data)
     data = ndimage.zoom(data, scale, order=1)
-    pos = posrecon(data, msk, pos, sig, algo)
+    pos = posrecon(data, msk, pos, sig, algo['pos']['regpar'])
     sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
     return pos, sig
 
+@jax.jit
+def jax_recon(sim_slice, data, regpar, m, pos):
+    return  (jnp.sum(jnp.power(sim_slice - data, 2)) + 
+            regpar * jnp.sum(jnp.power(m - pos, 2)))
 
-def posrecon(data, msk, pos, sig, algo):
+cost_calc = jax.vmap(jax_recon, in_axes=[0, None, None, 0, None])
+
+def posrecon_calc(sim, costsize, data, regpar, pos):
+    USE_JAX = True
+    cost = np.zeros((costsize), dtype='float32')
+    if USE_JAX:
+        mrange = jnp.arange(costsize)
+        sim_stack = jnp.asarray([sim[m:m+data.size] for m in mrange])
+        cost = cost_calc(sim_stack, data, regpar, mrange, pos)
+        """
+        Arr shapes for cost_calc:
+        sim_stack: 5960,400 (n pixels, stack_size)
+        data: 400, (stack_size)
+        regpar: 1, (int)
+        mrange 5960, (n pixels)
+        pos: float 
+        """
+    else:
+        for m in range(costsize):
+                cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
+                    regpar * np.sum(np.power(m - pos, 2)))
+    return cost
+
+def posrecon(data, msk, pos, sig, regpar):
     sim = signal.convolve(msk, sig, 'same')
     costsize = sim.size - data.size
-    cost = np.zeros((costsize), dtype='float32')
-    for m in range(costsize):
-        if algo['pos']['method'] == 'lsqr':
-            cost[m] = (np.sum(np.power(sim[m:m+data.size] - data, 2)) + 
-                algo['pos']['regpar'] * np.sum(np.power(m - pos, 2)))
+
+    cost = posrecon_calc(sim, costsize, data, regpar, pos) 
     try:
         pos = np.where(cost.min() == cost)[0][0]
     except IndexError:
