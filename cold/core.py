@@ -237,34 +237,60 @@ def _decode(args):
     geo = args[6]
     ind = args[7]
 
-    from cold import pixdecode
     import logging
+    full_sim_stack = []
+    full_data = []
+    full_ranges = []
+    full_costs = []
     for m in range(data.shape[0]):
-        pos[m], sig[m] = pixdecode(
-            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], m)
+
+        msk = cmask.discmask(geo, ind[m])
+        data_sing = normalize(data[m])
+        data_sing = ndimage.zoom(data[m], scl[m], order=1)
+
+        sim = signal.convolve(msk, sig[m], 'same')
+        costsize = sim.size - data_sing.size
+        mrange = np.arange(costsize)
+        sim_stack = np.asarray([sim[j:j+data_sing.size] for j in mrange])
+
+        full_sim_stack.append(sim_stack)
+        full_data.append(data_sing)
+        full_ranges.append(mrange)
+
+        #full_costs.append(cost_calc(sim_stack, data_sing, algo['pos']['regpar'], mrange, pos[m]))
+
+
         print('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
+
+    full_sim_stack = jnp.asarray(full_sim_stack)
+    full_data = jnp.asarray(full_data)
+    full_mrange = jnp.asarray(full_ranges)
+
+    print('data moved...')
+
+    full_costs = cost_calc_all(full_sim_stack, full_data, algo['pos']['regpar'], full_mrange, pos)
+
+    for i in range(data.shape[0]):
+        pos[i] = np.where(full_costs[i].min() == full_costs[i])[0][0]
+        sig[i] = sigrecon(data[i], msk[i], pos[i], sig[i], algo, base, i)
+
+
     return pos, sig
 
-
-def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ix):
-    """The main function for decoding pixel data."""
-
-    msk = cmask.discmask(geo, ind)
-    data = normalize(data)
-    data = ndimage.zoom(data, scale, order=1)
-    pos = posrecon(data, msk, pos, sig, algo['pos']['regpar'])
-    sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
-    return pos, sig
 
 @jax.jit
 def jax_recon(sim_slice, data, regpar, m, pos):
-    return  (jnp.sum(jnp.power(sim_slice - data, 2)) + 
+    return (jnp.sum(jnp.power(sim_slice - data, 2)) + 
             regpar * jnp.sum(jnp.power(m - pos, 2)))
+    
 
 cost_calc = jax.vmap(jax_recon, in_axes=[0, None, None, 0, None])
+
+cost_calc_all = jax.vmap(cost_calc, in_axes=[0, 0, None, 0, 0])
+
 
 def posrecon_calc(sim, costsize, data, regpar, pos):
     USE_JAX = True
@@ -287,16 +313,6 @@ def posrecon_calc(sim, costsize, data, regpar, pos):
                     regpar * np.sum(np.power(m - pos, 2)))
     return cost
 
-def posrecon(data, msk, pos, sig, regpar):
-    sim = signal.convolve(msk, sig, 'same')
-    costsize = sim.size - data.size
-
-    cost = posrecon_calc(sim, costsize, data, regpar, pos) 
-    try:
-        pos = np.where(cost.min() == cost)[0][0]
-    except IndexError:
-        pass
-    return pos
 
 
 def sigrecon(data, msk, pos, sig, algo, base, ix):
