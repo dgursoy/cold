@@ -23,7 +23,7 @@ __docformat__ = 'restructuredtext en'
 
 
 
-def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
+def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     """Decodes the position and pixel footprints and their positions
     on the mask using coded measurement data."""
 
@@ -137,11 +137,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
     logging.info('Initialized: Spline bases')
 
     if comp['server'] == 'single':
-        if use_gpu:
-            results = _decode_gpu([data, pos, sig, scl, algo, base, geo, ind, use_gpu])
-        else:
-            results = _decode([data, pos, sig, scl, algo, base, geo, ind, use_gpu])
-
+        results = _decode_batch([data, pos, sig, scl, algo, base, geo, ind, comp['use_gpu'], comp['batch_size']])
     
     else:
         # Partitioning
@@ -159,7 +155,6 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
                 datasize,
                 datasize * comp['workers'] * 1e-3))
         logging.info('Partitioning completed')
-
 
 
     if comp['server'] == 'local':
@@ -277,7 +272,7 @@ def posrecon(data, msk, pos, sig, algo):
         pass
     return pos
 
-def _decode_gpu(args):
+def _decode_batch(args):
     data = args[0]
     pos = args[1]
     sig = args[2]
@@ -286,6 +281,9 @@ def _decode_gpu(args):
     base = args[5]
     geo = args[6]
     ind = args[7]
+    ind = args[7]
+    use_gpu = args[8]
+    batch_size = args[9]
 
     sim_stack = []
     data_stack = []
@@ -296,7 +294,6 @@ def _decode_gpu(args):
     calc_regpar = algo['pos']['regpar'] != 0
 
     for m in range(data.shape[0]):
-
         msk = cmask.discmask(geo, ind[m])
         mask_stack.append(msk)
         data_slice = normalize(data[m])
@@ -312,23 +309,14 @@ def _decode_gpu(args):
         if calc_regpar:
             range_stack.append(mrange)
 
-        print('Pixel decoded: ' +
+        print('Pixel prepared: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
-            ' pos=' + str(pos[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
 
-    sim_stack = jnp.asarray(sim_stack)
-    data_stack = jnp.asarray(data_stack)
-    if calc_regpar:
-        range_stack = jnp.asarray(range_stack)
-        mask_stack = np.asarray(mask_stack)
-
-    print('data moved...')
-
-    if calc_regpar:
-        cost_stack = cost_calc_regpar(sim_stack, data_stack, algo['pos']['regpar'], range_stack, pos)
+    if use_gpu:
+        cost_stack = cost_gpu(sim_stack, data_stack, range_stack, mask_stack, pos, algo['pos']['regpar'], calc_regpar)
     else:
-        cost_stack = cost_calc(sim_stack, data_stack)
+        cost_stack = cost_cpu(sim_stack, data_stack, range_stack, mask_stack, pos, algo['pos']['regpar'], calc_regpar)
 
     for i in range(data.shape[0]):
         pos[i] = np.where(cost_stack[i].min() == cost_stack[i])[0][0]
@@ -336,6 +324,31 @@ def _decode_gpu(args):
 
     return pos, sig
 
+
+def cost_gpu(sim_stack, data_stack, range_stack, mask_stack, pos, regpar, calc_regpar):
+    sim_stack = jnp.asarray(sim_stack)
+    data_stack = jnp.asarray(data_stack)
+    if calc_regpar:
+        range_stack = jnp.asarray(range_stack)
+        mask_stack = jnp.asarray(mask_stack)
+
+    print('Data moved to gpu...')
+
+    if calc_regpar:
+        cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, range_stack, pos)
+    else:
+        cost_stack = cost_calc(sim_stack, data_stack)
+
+    return cost_stack
+
+
+def cost_cpu(sim_stack, data_stack, range_stack, mask_stack, pos, regpar, calc_regpar):
+    sim_stack = np.asarray(sim_stack)
+    data_stack = np.asarray(data_stack)
+    if calc_regpar:
+        range_stack = np.asarray(range_stack)
+        mask_stack = np.asarray(mask_stack)
+    
 
 @jax.jit
 def jax_posrecon_regpar(sim_slice, data, regpar, m, pos):
