@@ -292,11 +292,13 @@ def _decode_gpu(args):
     full_data = []
     full_ranges = []
     full_costs = []
+    mask_stack = []
     for m in range(data.shape[0]):
 
         msk = cmask.discmask(geo, ind[m])
+        mask_stack.append(msk)
         data_sing = normalize(data[m])
-        data_sing = ndimage.zoom(data[m], scl[m], order=1)
+        data_sing = ndimage.zoom(data_sing, scl[m], order=1)
 
         sim = signal.convolve(msk, sig[m], 'same')
         costsize = sim.size - data_sing.size
@@ -315,6 +317,7 @@ def _decode_gpu(args):
     full_sim_stack = jnp.asarray(full_sim_stack)
     full_data = jnp.asarray(full_data)
     full_mrange = jnp.asarray(full_ranges)
+    mask_stack = np.asarray(mask_stack)
 
     print('data moved...')
 
@@ -322,7 +325,7 @@ def _decode_gpu(args):
 
     for i in range(data.shape[0]):
         pos[i] = np.where(full_costs[i].min() == full_costs[i])[0][0]
-        sig[i] = sigrecon(data[i], msk[i], pos[i], sig[i], algo, base, i)
+        sig[i] = sigrecon(data[i], mask_stack[i], int(pos[i]), sig[i], algo, base, i)
 
     return pos, sig
 
