@@ -325,7 +325,7 @@ def _decode_gpu(args):
 
     for i in range(data.shape[0]):
         pos[i] = np.where(full_costs[i].min() == full_costs[i])[0][0]
-        sig[i] = sigrecon(data[i], mask_stack[i], int(pos[i]), sig[i], algo, base, i)
+        sig[i] = sigrecon(full_data[i], mask_stack[i], int(pos[i]), sig[i], algo, base, i)
 
     return pos, sig
 
