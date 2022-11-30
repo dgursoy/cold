@@ -287,57 +287,71 @@ def _decode_gpu(args):
     geo = args[6]
     ind = args[7]
 
-    import logging
-    full_sim_stack = []
-    full_data = []
-    full_ranges = []
-    full_costs = []
+    sim_stack = []
+    data_stack = []
+    range_stack = []
+    cost_stack = []
     mask_stack = []
+
+    calc_regpar = algo['pos']['regpar'] != 0
+
     for m in range(data.shape[0]):
 
         msk = cmask.discmask(geo, ind[m])
         mask_stack.append(msk)
-        data_sing = normalize(data[m])
-        data_sing = ndimage.zoom(data_sing, scl[m], order=1)
+        data_slice = normalize(data[m])
+        data_slice = ndimage.zoom(data_slice, scl[m], order=1)
 
         sim = signal.convolve(msk, sig[m], 'same')
-        costsize = sim.size - data_sing.size
+        costsize = sim.size - data_slice.size
         mrange = np.arange(costsize)
-        sim_stack = np.asarray([sim[j:j+data_sing.size] for j in mrange])
+        sim_slice = np.asarray([sim[j:j+data_slice.size] for j in mrange])
 
-        full_sim_stack.append(sim_stack)
-        full_data.append(data_sing)
-        full_ranges.append(mrange)
+        sim_stack.append(sim_slice)
+        data_stack.append(data_slice)
+        if calc_regpar:
+            range_stack.append(mrange)
 
         print('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
 
-    full_sim_stack = jnp.asarray(full_sim_stack)
-    full_data = jnp.asarray(full_data)
-    full_mrange = jnp.asarray(full_ranges)
-    mask_stack = np.asarray(mask_stack)
+    sim_stack = jnp.asarray(sim_stack)
+    data_stack = jnp.asarray(data_stack)
+    if calc_regpar:
+        range_stack = jnp.asarray(range_stack)
+        mask_stack = np.asarray(mask_stack)
 
     print('data moved...')
 
-    full_costs = cost_calc_all(full_sim_stack, full_data, algo['pos']['regpar'], full_mrange, pos)
+    if calc_regpar:
+        cost_stack = cost_calc_regpar(sim_stack, data_stack, algo['pos']['regpar'], range_stack, pos)
+    else:
+        cost_stack = cost_calc(sim_stack, data_stack)
 
     for i in range(data.shape[0]):
-        pos[i] = np.where(full_costs[i].min() == full_costs[i])[0][0]
-        sig[i] = sigrecon(full_data[i], mask_stack[i], int(pos[i]), sig[i], algo, base, i)
+        pos[i] = np.where(cost_stack[i].min() == cost_stack[i])[0][0]
+        sig[i] = sigrecon(data_stack[i], mask_stack[i], int(pos[i]), sig[i], algo, base, i)
 
     return pos, sig
 
 
 @jax.jit
-def jax_recon(sim_slice, data, regpar, m, pos):
+def jax_posrecon_regpar(sim_slice, data, regpar, m, pos):
     return (jnp.sum(jnp.power(sim_slice - data, 2)) + 
             regpar * jnp.sum(jnp.power(m - pos, 2)))
     
+px_posrecon_regpar = jax.vmap(jax_posrecon_regpar, in_axes=[0, None, None, 0, None])
+cost_calc_regpar = jax.vmap(px_posrecon_regpar, in_axes=[0, 0, None, 0, 0])
 
-cost_calc = jax.vmap(jax_recon, in_axes=[0, None, None, 0, None])
-cost_calc_all = jax.vmap(cost_calc, in_axes=[0, 0, None, 0, 0])
+
+@jax.jit
+def jax_posrecon(sim_slice, data):
+    return jnp.sum(jnp.power(sim_slice - data, 2))
+    
+px_posrecon = jax.vmap(jax_posrecon, in_axes=[0, None])
+cost_calc = jax.vmap(px_posrecon, in_axes=[0, 0])
 
 
 def sigrecon(data, msk, pos, sig, algo, base, ix):
