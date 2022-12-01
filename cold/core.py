@@ -314,9 +314,9 @@ def _decode_batch(args):
             ' scales=' + str(scl[m].squeeze()))
 
     if use_gpu:
-        cost_stack = cost_gpu(sim_stack, data_stack, range_stack, mask_stack, pos, algo['pos']['regpar'], calc_regpar)
+        cost_stack = cost_gpu(sim_stack, data_stack, range_stack, pos, algo['pos']['regpar'], calc_regpar, batch_size)
     else:
-        cost_stack = cost_cpu(sim_stack, data_stack, range_stack, mask_stack, pos, algo['pos']['regpar'], calc_regpar)
+        cost_stack = cost_cpu(sim_stack, data_stack, range_stack, pos, algo['pos']['regpar'], calc_regpar)
 
     for i in range(data.shape[0]):
         pos[i] = np.where(cost_stack[i].min() == cost_stack[i])[0][0]
@@ -325,21 +325,28 @@ def _decode_batch(args):
     return pos, sig
 
 
-def cost_gpu(sim_stack, data_stack, range_stack, mask_stack, pos, regpar, calc_regpar):
-    sim_stack = jnp.asarray(sim_stack)
-    data_stack = jnp.asarray(data_stack)
-    if calc_regpar:
-        range_stack = jnp.asarray(range_stack)
-        mask_stack = jnp.asarray(mask_stack)
+def cost_gpu(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar, batch_size):
+    cost_stack = []
+    for start in range(0, len(sim_stack), batch_size):
+        end = start + batch_size
+        if end >= len(sim_stack):
+            end = len(sim_stack)
+        print(f's: {start} e: {end} total {len(sim_stack)}')
 
-    print('Data moved to gpu...')
+        sim_batch = jnp.stack(sim_stack[start:end], axis=0)
+        data_batch = jnp.stack(data_stack[start:end], axis=0)
+        if calc_regpar:
+            range_batch = jnp.stack(range_stack[start:end], axis=0)
+            pos_batch = pos[start:end]
 
-    if calc_regpar:
-        cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, range_stack, pos)
-    else:
-        cost_stack = cost_calc(sim_stack, data_stack)
+        print('Data moved to gpu...')
 
-    return cost_stack
+        if calc_regpar:
+            cost_stack.append(cost_calc_regpar(sim_batch, data_batch, regpar, range_batch, pos_batch))
+        else:
+            cost_stack.append(cost_calc(sim_batch, data_batch))
+
+    return np.concatenate(cost_stack, axis=0)
 
 
 def cost_cpu(sim_stack, data_stack, range_stack, mask_stack, pos, regpar, calc_regpar):
