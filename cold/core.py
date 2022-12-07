@@ -292,12 +292,12 @@ def _decode_batch(args):
         end = start + batch_size
         if end >= data.shape[0]:
             end = data.shape[0]
-        print(f's: {start} e: {end} total {data.shape[0]}')
 
         sim_stack = []
         data_stack = []
         range_stack = []
         mask_stack = []
+        costsize_stack = []
 
         for m in range(start, end):
             msk = cmask.discmask(geo, ind[m])
@@ -307,6 +307,7 @@ def _decode_batch(args):
 
             sim = signal.convolve(msk, sig[m], 'same')
             costsize = sim.size - data_slice.size
+            costsize_stack.append(costsize)
             mrange = np.arange(costsize)
             sim_slice = np.asarray([sim[j:j+data_slice.size] for j in mrange])
 
@@ -315,36 +316,47 @@ def _decode_batch(args):
             if calc_regpar:
                 range_stack.append(mrange)
 
+
+
         print('Pixel prepared: ' +
             str(start) + ':' + str(end) + '/' + str(data.shape[0] - 1))
 
         if use_gpu:
-            cost_stack = cost_gpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar, batch_size)
+            cost_stack = cost_gpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
         else:
             cost_stack = cost_cpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
 
         for i in range(len(cost_stack)):
-            pos[start + i] = np.where(cost_stack[i].min() == cost_stack[i])[0][0]
+            cs = costsize_stack[i]
+            pos[start + i] = np.where(cost_stack[i][:cs].min() == cost_stack[i][:cs])[0][0]
             sig[start + i] = sigrecon(data_stack[i], mask_stack[i], int(pos[start + i]), sig[start + i], algo, base, start + i)
 
     return pos, sig
 
 
-def cost_gpu(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar, batch_size):
+def cost_gpu(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
+    # Pad arrays for valid vector acceleration
+    max_sim = max(sim_stack, key=lambda sim:sim.shape[0]).shape[0]
+    max_data = max(sim_stack, key=lambda sim:sim.shape[1]).shape[1]
+    pad_sim_stack = []
+    pad_data_stack = []
+    pad_range_sack = []
+    for i in range(len(sim_stack)):
+        s_shape = sim_stack[i].shape
+        pad_sim_stack.append(jnp.pad(sim_stack[i], [(0, max_sim-s_shape[0]), (0, max_data-s_shape[1])]))
+        pad_data_stack.append(jnp.pad(data_stack[i], (0, max_data - data_stack[i].shape[0])))
+        if calc_regpar:
+            pad_range_sack.append(jnp.pad(range_stack[i], (0, max_sim - range_stack[i].shape[0])))
 
-    #sim_stack = jnp.asarray(sim_stack, dtype=jnp.float16)
-    #data_stack = jnp.asarray(data_stack, axis=0, dtype=jnp.float16)
-    sim_stack = jnp.asarray(sim_stack)
-    data_stack = jnp.asarray(data_stack)
+    pad_sim_stack = jnp.asarray(pad_sim_stack)
+    pad_data_stack = jnp.asarray(pad_data_stack)
     if calc_regpar:
-        range_stack = jnp.stack(range_stack, axis=0, dtype=jnp.float16)
-
-    print('Data moved to gpu...')
+        pad_range_stack = jnp.stack(pad_range_stack, axis=0)
 
     if calc_regpar:
-        cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, range_stack, pos)
+        cost_stack = cost_calc_regpar(pad_sim_stack, pad_data_stack, regpar, pad_range_stack, pos)
     else:
-        cost_stack = cost_calc(sim_stack, data_stack)
+        cost_stack = cost_calc(pad_sim_stack, pad_data_stack)
 
     return cost_stack
 
