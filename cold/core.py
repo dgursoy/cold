@@ -327,7 +327,7 @@ def _decode_batch(args):
             cost_stack = cost_cpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
 
         for i in range(len(cost_stack)):
-            cs = costsize_stack[i] + 1
+            cs = costsize_stack[i]
             try:
                 pos[start + i] = np.where(cost_stack[i][:cs].min() == cost_stack[i][:cs])[0][0]
             except IndexError:
