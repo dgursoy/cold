@@ -9,11 +9,11 @@ from cold import pack, partition, loadsingle, load, saveplt
 from cold import mask as cmask
 from skimage.feature import blob_log
 import multiprocessing
+import jax.numpy as jnp
+import jax
 import warnings
 warnings.filterwarnings('ignore')
 
-import jax.numpy as jnp
-import jax
 
 __author__ = "Doga Gursoy"
 __copyright__ = "Copyright (c) 2021, UChicago Argonne, LLC."
@@ -136,8 +136,8 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
             inc += 1
     logging.info('Initialized: Spline bases')
 
-    if comp['server'] == 'single':
-        results = _decode_batch([data, pos, sig, scl, algo, base, geo, ind, comp['use_gpu'], comp['batch_size']])
+    if comp['server'] == 'jax':
+        results = _decode_batch([data, pos, sig, scl, algo, base, geo, ind, comp['batch_size']])
     
     else:
         # Partitioning
@@ -213,7 +213,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
             pos[m] = batch_task[task]['result'][0]
             sig[m] = batch_task[task]['result'][1]
 
-    if comp['server'] != 'single':
+    if comp['server'] != 'jax':
         data = pack(data)
         pos = pack(pos)
         sig = pack(sig) 
@@ -272,7 +272,20 @@ def posrecon(data, msk, pos, sig, algo):
         pass
     return pos
 
+
 def _decode_batch(args):
+    """
+    Perform the decoding process in a batch-wise fashion 
+    to vectorize posrecon. Stacks of data are prepared for 
+    the cost_batch function, (the expensive calculation)
+    and then the output is fed through sigrecon. The cost of 
+    the setup is trivial compared to pos_recon's calculation.
+
+    NOTE: Memory management is critical in this section. If 
+          non-result variables stay in scope between
+          iterations of the outer loop, this can easily
+          OOM hardware. 
+    """
     data = args[0]
     pos = args[1]
     sig = args[2]
@@ -282,8 +295,7 @@ def _decode_batch(args):
     geo = args[6]
     ind = args[7]
     ind = args[7]
-    use_gpu = args[8]
-    batch_size = args[9]
+    batch_size = args[8]
 
 
     calc_regpar = algo['pos']['regpar'] != 0
@@ -316,15 +328,10 @@ def _decode_batch(args):
             if calc_regpar:
                 range_stack.append(mrange)
 
-
-
-        print('Pixel prepared: ' +
+        logging.info('Pixel prepared: ' +
             str(start) + ':' + str(end) + '/' + str(data.shape[0] - 1))
 
-        if use_gpu:
-            cost_stack = cost_gpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
-        else:
-            cost_stack = cost_cpu(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
+        cost_stack = cost_batch(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
 
         for i in range(len(cost_stack)):
             cs = costsize_stack[i]
@@ -337,8 +344,14 @@ def _decode_batch(args):
     return pos, sig
 
 
-def cost_gpu(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
-    # Pad arrays for valid vector acceleration
+def cost_batch(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
+    """
+    Vectorized operations must be of the same shape. 
+
+    Pad input batch stacks to the same dimension,
+    convert data to jnp arrays, and execute a single 
+    batch of cost calculations via jax.
+    """
     max_sim = max(sim_stack, key=lambda sim:sim.shape[0]).shape[0]
     max_data = max(sim_stack, key=lambda sim:sim.shape[1]).shape[1]
     pad_sim_stack = []
@@ -364,21 +377,25 @@ def cost_gpu(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
     return cost_stack
 
 
-def cost_cpu(sim_stack, data_stack, range_stack, mask_stack, pos, regpar, calc_regpar):
-    sim_stack = np.asarray(sim_stack)
-    data_stack = np.asarray(data_stack)
-    if calc_regpar:
-        range_stack = np.asarray(range_stack)
-        mask_stack = np.asarray(mask_stack)
-    
+"""
+The following functions apply vmap to vectorize posrecon. 
+Each of the three functions correspond to a dimension that is
+being vectorized.  In the case that regpar is 0, the regpar 
+component can be removed.
 
-@jax.jit
+Dims:
+0: cost_calc - vectorization across multiple pixels
+1: px_posrecon - single pixel inner search loop
+2: posrecon - single position search reduction
+
+NOTE: This can be executed on GPU. Control via CUDA_VISIBALE_DEVICES
+"""
 def jax_posrecon_regpar(sim_slice, data, regpar, m, pos):
     return (jnp.sum(jnp.power(sim_slice - data, 2)) + 
             regpar * jnp.sum(jnp.power(m - pos, 2)))
     
 px_posrecon_regpar = jax.vmap(jax_posrecon_regpar, in_axes=[0, None, None, 0, None])
-cost_calc_regpar = jax.vmap(px_posrecon_regpar, in_axes=[0, 0, None, 0, 0])
+cost_calc_regpar = jax.jit(jax.vmap(px_posrecon_regpar, in_axes=[0, 0, None, 0, 0]))
 
 
 @jax.jit
@@ -386,7 +403,7 @@ def jax_posrecon(sim_slice, data):
     return jnp.sum(jnp.power(sim_slice - data, 2))
     
 px_posrecon = jax.vmap(jax_posrecon, in_axes=[0, None])
-cost_calc = jax.vmap(px_posrecon, in_axes=[0, 0])
+cost_calc = jax.jit(jax.vmap(px_posrecon, in_axes=[0, 0]))
 
 
 def sigrecon(data, msk, pos, sig, algo, base, ix):
