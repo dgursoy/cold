@@ -278,8 +278,7 @@ def _decode_batch(args):
     Perform the decoding process in a batch-wise fashion 
     to vectorize posrecon. Stacks of data are prepared for 
     the cost_batch function, (the expensive calculation)
-    and then the output is fed through sigrecon. The cost of 
-    the setup is trivial compared to pos_recon's calculation.
+    and then the output is fed through sigrecon. 
 
     NOTE: Memory management is critical in this section. If 
           non-result variables stay in scope between
@@ -300,6 +299,8 @@ def _decode_batch(args):
 
     calc_regpar = algo['pos']['regpar'] != 0
 
+    cost_stack = None
+
     for start in range(0, data.shape[0], batch_size):
         end = start + batch_size
         if end >= data.shape[0]:
@@ -310,6 +311,7 @@ def _decode_batch(args):
         range_stack = []
         mask_stack = []
         costsize_stack = []
+        prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
 
         for m in range(start, end):
             msk = cmask.discmask(geo, ind[m])
@@ -331,17 +333,39 @@ def _decode_batch(args):
         logging.info('Pixel prepared: ' +
             str(start) + ':' + str(end) + '/' + str(data.shape[0] - 1))
 
-        cost_stack = cost_batch(sim_stack, data_stack, range_stack, pos[start:end], algo['pos']['regpar'], calc_regpar)
+        # Don't request data from the GPU until AFTER next batch
+        # is prepared. CPU and GPU can operate in parallel (async dispatch)
+        if prev_calc_stack['cost'] is not None:
+            update_sig_batch(sig, pos, prev_calc_stack)
 
-        for i in range(len(cost_stack)):
-            cs = costsize_stack[i]
-            try:
-                pos[start + i] = np.where(cost_stack[i][:cs].min() == cost_stack[i][:cs])[0][0]
-            except IndexError:
-                pass
-            sig[start + i] = sigrecon(data_stack[i], mask_stack[i], int(pos[start + i]), sig[start + i], algo, base, start + i)
+        prev_calc_stack['costsize'] = costsize_stack
+        prev_calc_stack['start'] = start
+        prev_calc_stack['data'] = data_stack
+        prev_calc_stack['mask'] = mask_stack
+
+        prev_calc_stack['cost'] = cost_batch(sim_stack, data_stack, range_stack, pos[start:end], 
+                                             algo['pos']['regpar'], calc_regpar)
+
+    # Block to prevent GPU streaming
+    # TODO: Sill seems to be streaming, but rest are efficient.
+    jax.block_until_ready(prev_calc_stack['cost'])
+
+    # Perform final pos/sig update.
+    update_sig_batch(sig, pos, prev_calc_stack)
 
     return pos, sig
+
+
+def update_sig_batch(sig, pos, calc_stacks):
+            for i in range(len(calc_stacks['cost'])):
+                cs = calc_stacks['costsize'][i]
+                try:
+                    pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
+                except IndexError:
+                    pass
+                sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
+                                                         sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
+
 
 
 def cost_batch(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
@@ -398,7 +422,6 @@ px_posrecon_regpar = jax.vmap(jax_posrecon_regpar, in_axes=[0, None, None, 0, No
 cost_calc_regpar = jax.jit(jax.vmap(px_posrecon_regpar, in_axes=[0, 0, None, 0, 0]))
 
 
-@jax.jit
 def jax_posrecon(sim_slice, data):
     return jnp.sum(jnp.power(sim_slice - data, 2))
     
