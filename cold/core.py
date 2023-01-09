@@ -307,11 +307,20 @@ def _decode_batch(args):
             end = data.shape[0]
 
         sim_stack = []
-        data_stack = []
         range_stack = []
         mask_stack = []
         costsize_stack = []
         prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
+
+        # Precompute Mask
+        msk = cmask.discmask(geo, ind[0])
+
+        # Calculate max data sizes
+        max_data = round(data[0].size * np.max(scl[start:end]))
+        min_data = round(data[0].size * np.min(scl[start:end]))
+
+        data_stack = np.zeros((end-start, max_data))
+        sim_stack = np.zeros((end-start, msk.size - min_data + 1, max_data))
 
         for m in range(start, end):
             msk = cmask.discmask(geo, ind[m])
@@ -323,13 +332,13 @@ def _decode_batch(args):
             costsize = sim.size - data_slice.size
             costsize_stack.append(costsize)
             mrange = np.arange(costsize)
-            sim_slice = np.asarray([sim[j:j+data_slice.size] for j in mrange])
+            view = np.lib.stride_tricks.sliding_window_view(sim, data_slice.size)
+            sim_stack[m, :view.shape[0], :view.shape[1]] = view
 
-            sim_stack.append(sim_slice)
-            data_stack.append(data_slice)
+            data_stack[m, :data_slice.size] = data_slice
             if calc_regpar:
                 range_stack.append(mrange)
-
+    
         logging.info('Pixel prepared: ' +
             str(start) + ':' + str(end) + '/' + str(data.shape[0] - 1))
 
@@ -376,27 +385,18 @@ def cost_batch(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
     convert data to jnp arrays, and execute a single 
     batch of cost calculations via jax.
     """
-    max_sim = max(sim_stack, key=lambda sim:sim.shape[0]).shape[0]
-    max_data = max(sim_stack, key=lambda sim:sim.shape[1]).shape[1]
-    pad_sim_stack = []
-    pad_data_stack = []
     pad_range_sack = []
     for i in range(len(sim_stack)):
-        s_shape = sim_stack[i].shape
-        pad_sim_stack.append(jnp.pad(sim_stack[i], [(0, max_sim-s_shape[0]), (0, max_data-s_shape[1])]))
-        pad_data_stack.append(jnp.pad(data_stack[i], (0, max_data - data_stack[i].shape[0])))
         if calc_regpar:
             pad_range_sack.append(jnp.pad(range_stack[i], (0, max_sim - range_stack[i].shape[0])))
 
-    pad_sim_stack = jnp.asarray(pad_sim_stack)
-    pad_data_stack = jnp.asarray(pad_data_stack)
     if calc_regpar:
         pad_range_stack = jnp.stack(pad_range_stack, axis=0)
 
     if calc_regpar:
-        cost_stack = cost_calc_regpar(pad_sim_stack, pad_data_stack, regpar, pad_range_stack, pos)
+        cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, pad_range_stack, pos)
     else:
-        cost_stack = cost_calc(pad_sim_stack, pad_data_stack)
+        cost_stack = cost_calc(sim_stack, data_stack)
 
     return cost_stack
 

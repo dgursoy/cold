@@ -4,6 +4,7 @@ import numpy as np
 from scipy import signal, ndimage
 import logging
 import warnings
+from dataclasses import dataclass
 warnings.filterwarnings('ignore')
 
 
@@ -14,7 +15,62 @@ __docformat__ = 'restructuredtext en'
 from cold import core
 
 
+"""
+Nested Cache
+Layer 1: Mask Cache
+    K: path to mask
+     V: Mask object with L2 Cache
+
+Layer 2: Ind Offset Cache
+    K: pixel offset factor (int)
+    V: Precomputed masks at offset
+"""
+MASK_CACHE = {}
+
+@dataclass
+class Mask:
+    mask_base: np.ndarray
+    offset_cache: dict
+    mx: np.ndarray
+    my: np.ndarray
+    mz: np.ndarray
+    pt1: np.ndarray
+    factor: int
+
+
 def discmask(geo, ind):
+    global MASK_CACHE
+
+    if geo['mask']['path'] not in MASK_CACHE:
+        MASK_CACHE[geo['mask']['path']] = build_mask(geo)
+    
+    mask = MASK_CACHE[geo['mask']['path']]
+
+    # Offset calculation
+    p0 = core.pix2pos(ind, geo) # [<->, dis2det, v^]
+    px = np.dot(p0, mask.mx) 
+    py = np.dot(p0, mask.my) 
+    pz = np.dot(p0, mask.mz) 
+    offset = np.abs(geo['mask']['thickness'] * px / py)
+    
+    full_offset = int(mask.factor * offset / geo['mask']['resolution'])
+
+    if full_offset not in mask.offset_cache:
+        mask.offset_cache[full_offset] = compute_ind_offset(mask, full_offset)
+    
+    return mask.offset_cache[full_offset]
+
+
+def compute_ind_offset(mask, full_offset):
+        kernel = signal.tukey(full_offset, alpha=0)
+        kernel /= kernel.sum()
+        mask_out = signal.convolve(mask.mask_base, kernel, 'same')
+        mask_out = ndimage.zoom(mask_out, 1 / mask.factor, order=1)
+        mask_out = core.invert(mask_out)
+        return mask_out
+
+
+def build_mask(geo):
     # Mask create
     seq = np.load(geo['mask']['path'])
     dseq = np.diff(seq)
@@ -62,12 +118,6 @@ def discmask(geo, ind):
     my = np.dot(rotmat, my)
     mz = np.dot(rotmat, mz)
 
-    # Offset calculation
-    p0 = core.pix2pos(ind, geo) # [<->, dis2det, v^]
-    px = np.dot(p0, mx) 
-    py = np.dot(p0, my) 
-    pz = np.dot(p0, mz) 
-    offset = np.abs(geo['mask']['thickness'] * px / py)
 
     # Discretisize mask
     grid = creategrid(geo['mask'])
@@ -87,17 +137,10 @@ def discmask(geo, ind):
         mask[end+1] = pt1[m, 1] / geo['mask']['resolution'] - end
     factor = 10
     mask = ndimage.zoom(mask, factor, order=1)
-    if int(factor * offset / geo['mask']['resolution']) > 0:
-        kernel = signal.tukey(int(factor * offset / geo['mask']['resolution']), alpha=0)
-        kernel /= kernel.sum()
-        mask = signal.convolve(mask, kernel, 'same')
-    mask = ndimage.zoom(mask, 1 / factor, order=1)
 
-    # Invert
-    mask = core.invert(mask)
+    # Final preprocessing assuming no offset
 
-    return mask
-
+    return Mask(mask, {}, mx, my, mz, pt1, factor)
 
 
 def mask(mask):
