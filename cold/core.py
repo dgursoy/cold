@@ -332,10 +332,15 @@ def _decode_batch(args):
             costsize = sim.size - data_slice.size
             costsize_stack.append(costsize)
             mrange = np.arange(costsize)
-            view = np.lib.stride_tricks.sliding_window_view(sim, data_slice.size)
-            sim_stack[m, :view.shape[0], :view.shape[1]] = view
 
-            data_stack[m, :data_slice.size] = data_slice
+            view = np.lib.stride_tricks.sliding_window_view(sim, data_slice.size)
+            sim_stack[m-start, :view.shape[0], :view.shape[1]] = view
+            # For argmin to be calculated on GPU, pad with high values
+            sim_stack[m-start, costsize:, :view.shape[1]] = 999999999
+            # for j in mrange:
+            #    sim_stack[m][j][:data_slice.size] = sim[j:j+data_slice.size]
+
+            data_stack[m-start, :data_slice.size] = data_slice
             if calc_regpar:
                 range_stack.append(mrange)
     
@@ -345,6 +350,9 @@ def _decode_batch(args):
         # Don't request data from the GPU until AFTER next batch
         # is prepared. CPU and GPU can operate in parallel (async dispatch)
         if prev_calc_stack['cost'] is not None:
+            #jax.block_until_ready(prev_calc_stack['cost'])
+            #prev_calc_stack['cost'] = np.asarray(prev_calc_stack['cost'])
+            prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
             update_sig_batch(sig, pos, prev_calc_stack)
 
         prev_calc_stack['costsize'] = costsize_stack
@@ -357,23 +365,19 @@ def _decode_batch(args):
 
     # Block to prevent GPU streaming
     # TODO: Sill seems to be streaming, but rest are efficient.
-    jax.block_until_ready(prev_calc_stack['cost'])
+    #jax.block_until_ready(prev_calc_stack['cost'])
+    prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
 
     # Perform final pos/sig update.
     update_sig_batch(sig, pos, prev_calc_stack)
 
     return pos, sig
 
-
 def update_sig_batch(sig, pos, calc_stacks):
-            for i in range(len(calc_stacks['cost'])):
-                cs = calc_stacks['costsize'][i]
-                try:
-                    pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
-                except IndexError:
-                    pass
-                sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
-                                                         sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
+    pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
+    for i in range(len(calc_stacks['cost'])):
+        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
+                                                sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
 
 
 
@@ -385,18 +389,19 @@ def cost_batch(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
     convert data to jnp arrays, and execute a single 
     batch of cost calculations via jax.
     """
-    pad_range_sack = []
-    for i in range(len(sim_stack)):
-        if calc_regpar:
-            pad_range_sack.append(jnp.pad(range_stack[i], (0, max_sim - range_stack[i].shape[0])))
-
     if calc_regpar:
+        pad_range_sack = []
+        for i in range(len(sim_stack)):
+            pad_range_sack.append(jnp.pad(range_stack[i], (0, max_sim - range_stack[i].shape[0])))
         pad_range_stack = jnp.stack(pad_range_stack, axis=0)
+    
+    sim_stack = jax.device_put(sim_stack)
+    data_stack = jax.device_put(data_stack)
 
     if calc_regpar:
         cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, pad_range_stack, pos)
     else:
-        cost_stack = cost_calc(sim_stack, data_stack)
+        cost_stack = cost_calc_reduce(sim_stack, data_stack)
 
     return cost_stack
 
@@ -418,6 +423,7 @@ def jax_posrecon_regpar(sim_slice, data, regpar, m, pos):
     return (jnp.sum(jnp.power(sim_slice - data, 2)) + 
             regpar * jnp.sum(jnp.power(m - pos, 2)))
     
+
 px_posrecon_regpar = jax.vmap(jax_posrecon_regpar, in_axes=[0, None, None, 0, None])
 cost_calc_regpar = jax.jit(jax.vmap(px_posrecon_regpar, in_axes=[0, 0, None, 0, 0]))
 
@@ -426,7 +432,18 @@ def jax_posrecon(sim_slice, data):
     return jnp.sum(jnp.power(sim_slice - data, 2))
     
 px_posrecon = jax.vmap(jax_posrecon, in_axes=[0, None])
-cost_calc = jax.jit(jax.vmap(px_posrecon, in_axes=[0, 0]))
+cost_calc = jax.vmap(px_posrecon, in_axes=[0, 0])
+
+@jax.jit
+def cost_calc_reduce(sim_slice, data):
+    return  jnp.argmin(cost_calc(sim_slice, data), axis=1)
+
+
+def jax_posrecon_slice(sim, start, size, data):
+    return jax.sum(jax.power(jax.lax.dynamic_slice(sim, start, size) - data, 2))
+
+px_posreocn_slice = jax.vmap(jax_posrecon_slice, in_axis=[None, 0, None, None])
+cost_calc_slice = jax.vmap(px_posreocn_slice, in_axis=[0, None, None, 0])
 
 
 def sigrecon(data, msk, pos, sig, algo, base, ix):
