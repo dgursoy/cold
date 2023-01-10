@@ -320,7 +320,7 @@ def _decode_batch(args):
         min_data = round(data[0].size * np.min(scl[start:end]))
 
         data_stack = np.zeros((end-start, max_data))
-        sim_stack = np.zeros((end-start, msk.size - min_data + 1, max_data))
+        sim_stack = np.zeros((end-start, msk.size))
 
         for m in range(start, end):
             msk = cmask.discmask(geo, ind[m])
@@ -332,13 +332,8 @@ def _decode_batch(args):
             costsize = sim.size - data_slice.size
             costsize_stack.append(costsize)
             mrange = np.arange(costsize)
+            sim_stack[m-start] = sim
 
-            view = np.lib.stride_tricks.sliding_window_view(sim, data_slice.size)
-            sim_stack[m-start, :view.shape[0], :view.shape[1]] = view
-            # For argmin to be calculated on GPU, pad with high values
-            sim_stack[m-start, costsize:, :view.shape[1]] = 999999999
-            # for j in mrange:
-            #    sim_stack[m][j][:data_slice.size] = sim[j:j+data_slice.size]
 
             data_stack[m-start, :data_slice.size] = data_slice
             if calc_regpar:
@@ -401,7 +396,8 @@ def cost_batch(sim_stack, data_stack, range_stack, pos, regpar, calc_regpar):
     if calc_regpar:
         cost_stack = cost_calc_regpar(sim_stack, data_stack, regpar, pad_range_stack, pos)
     else:
-        cost_stack = cost_calc_reduce(sim_stack, data_stack)
+        calc_range = jnp.arange(sim_stack.shape[1] - data_stack.shape[1])
+        cost_stack = cost_calc_slice_jit(sim_stack, calc_range, data_stack.shape[1], data_stack)
 
     return cost_stack
 
@@ -440,11 +436,16 @@ def cost_calc_reduce(sim_slice, data):
 
 
 def jax_posrecon_slice(sim, start, size, data):
-    return jax.sum(jax.power(jax.lax.dynamic_slice(sim, start, size) - data, 2))
+    return jnp.sum(jnp.power(jax.lax.dynamic_slice(sim, start, (size,)) - data, 2))
 
-px_posreocn_slice = jax.vmap(jax_posrecon_slice, in_axis=[None, 0, None, None])
-cost_calc_slice = jax.vmap(px_posreocn_slice, in_axis=[0, None, None, 0])
+px_posrecon_slice = jax.vmap(jax_posrecon_slice, in_axes=[None, 0, None, None])
+cost_calc_slice = jax.vmap(px_posrecon_slice, in_axes=[0, None, None, 0])
 
+def cost_calc_reduce_slice(sim, start, size, data):
+    start = jnp.expand_dims(start, 1)
+    return  jnp.argmin(cost_calc_slice(sim, start, size, data), axis=1)
+
+cost_calc_slice_jit = jax.jit(cost_calc_reduce_slice, static_argnums=2)
 
 def sigrecon(data, msk, pos, sig, algo, base, ix):
     first = int((sig.size - 1) / 2)
