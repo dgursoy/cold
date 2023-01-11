@@ -136,11 +136,12 @@ def build_mask(geo):
         mask[begin] = begin - pt1[m, 0] / geo['mask']['resolution']
         mask[end+1] = pt1[m, 1] / geo['mask']['resolution'] - end
     factor = 10
+    mask_0 = np.copy(mask)
     mask = ndimage.zoom(mask, factor, order=1)
 
     # Final preprocessing assuming no offset
 
-    return Mask(mask, {}, mx, my, mz, pt1, factor)
+    return Mask(mask, {0:mask_0}, mx, my, mz, pt1, factor)
 
 
 def mask(mask):

@@ -299,8 +299,8 @@ def _decode_batch(args):
 
     calc_regpar = algo['pos']['regpar'] != 0
 
-    cost_stack = None
-
+    cost_stacks = []
+    prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
     for start in range(0, data.shape[0], batch_size):
         end = start + batch_size
         if end >= data.shape[0]:
@@ -310,7 +310,6 @@ def _decode_batch(args):
         range_stack = []
         mask_stack = []
         costsize_stack = []
-        prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
 
         # Precompute Mask
         msk = cmask.discmask(geo, ind[0])
@@ -318,6 +317,9 @@ def _decode_batch(args):
         # Calculate max data sizes
         max_data = round(data[0].size * np.max(scl[start:end]))
         min_data = round(data[0].size * np.min(scl[start:end]))
+        if abs((max_data/min_data) - 1) > 0.05:
+            logging.warn(f'WARNING: High difference in scl detected!')
+            # TODO: Find way to fix or jit batch
 
         data_stack = np.zeros((end-start, max_data))
         sim_stack = np.zeros((end-start, msk.size))
@@ -348,7 +350,8 @@ def _decode_batch(args):
             #jax.block_until_ready(prev_calc_stack['cost'])
             #prev_calc_stack['cost'] = np.asarray(prev_calc_stack['cost'])
             prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
-            update_sig_batch(sig, pos, prev_calc_stack)
+            cost_stacks.append(prev_calc_stack)
+            prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
 
         prev_calc_stack['costsize'] = costsize_stack
         prev_calc_stack['start'] = start
@@ -364,7 +367,9 @@ def _decode_batch(args):
     prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
 
     # Perform final pos/sig update.
-    update_sig_batch(sig, pos, prev_calc_stack)
+    cost_stacks.append(prev_calc_stack)
+    for stack in cost_stacks:
+        update_sig_batch(sig, pos, stack)
 
     return pos, sig
 
