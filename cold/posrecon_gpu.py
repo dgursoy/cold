@@ -4,48 +4,86 @@ import numpy as np
 import math
 
 class PosReconGPU():
-    CUDA_MAX_THREADS = 1024
-    MAX_THREAD_OVERHANG = int(CUDA_MAX_THREADS * 0.1)
+    # Recommeneded 128-512, always multiple of 32. Seems good for A100
+    CUDA_THREADS = 256
 
     def __init__(self, batch_size, min_data_size, mask_size):
         self.min_data_size = min_data_size
         self._calc_cuda_params(batch_size, min_data_size, mask_size)
         self.conv_sum_kernel, self.argmin_kernel = self._compile_kernels(min_data_size,
-                                                                         5)
-
+                                                                         self.CUDA_THREADS)
 
     def calc_batch(self, mask_stack, data_stack, data_sizes):
+        #TODO Add size safety
+
         batch_size = mask_stack.shape[0]
         mask_size = mask_stack.shape[1]
 
+        argmin_red_arrs = []
+        for red_size in self.argmin_inters:
+            argmin_red_arrs.append(cuda.device_array((batch_size, red_size, 2)))
+        argmin_red_arrs.append(cuda.device_array((batch_size, 1, 2)))
+
+        print(f"Conv Blocks: {self.conv_blocks} Threads: {self.conv_block_threads}")
+
         # NOTE: Original code skips last check. To enable set convs.shape[1] + 1
         #       and reconfigure launch parameters
-        convs = np.zeros((batch_size, mask_size - self.min_data_size))
+        convs = np.zeros((batch_size, self.conv_size, 2))
         self.conv_sum_kernel[self.conv_blocks, self.conv_block_threads](
             mask_stack,
             data_stack, 
             data_sizes, 
             convs)
+
+        for i in range(len(self.argmin_blocks)):
+            if i == 0:
+                input_arr = convs
+            else:
+                input_arr = argmin_red_arrs[i-1]
+            self.argmin_kernel[self.argmin_threads[i], self.argmin_blocks[i]](
+                input_arr, 
+                argmin_red_arrs[i]
+            ) 
+            print(argmin_red_arrs[i])
+        
         
         return convs
 
 
     def _calc_cuda_params(self, batch_size, min_data_size, mask_size):
-        conv_total_threads = (mask_size - min_data_size) * batch_size
-        self.conv_block_threads = min(self.CUDA_MAX_THREADS, conv_total_threads)
-        self.conv_blocks = math.ceil(conv_total_threads / self.conv_block_threads)
+        self.conv_size = mask_size - min_data_size
+        self._calc_conv_sum_params(batch_size, min_data_size, mask_size)
+        self._calc_argmin_params(batch_size, self.conv_size)
 
-        overhang = conv_total_threads - (self.conv_blocks * self.conv_block_threads)
-        if overhang > self.MAX_THREAD_OVERHANG:
-            block_threads = self.conv_block_threads
-            for _ in range(int(self.conv_block_threads)):
-                block_threads -= 1
-                conv_blocks = math.ceil(conv_total_threads / block_threads)
-                overhang = conv_total_threads - (conv_blocks * block_threads)
-                if overhang <= self.MAX_THREAD_OVERHANG:
-                    self.conv_block_threads = block_threads
-                    self.conv_blocks = conv_blocks
-                    break
+    
+    def _calc_argmin_params(self, batch_size, conv_size):
+        self.argmin_blocks = []
+        self.argmin_threads = []
+        self.argmin_inters = []
+        
+        intermediate_size = conv_size
+        while intermediate_size * self.CUDA_THREADS > self.CUDA_THREADS:
+            # Min thread size per block = 32
+            if intermediate_size < self.CUDA_THREADS:
+                self.argmin_threads.append(int(math.ceil(intermediate_size / 32) * 32))
+            else:
+                self.argmin_threads.append(self.CUDA_THREADS)
+            self.argmin_blocks.append(math.ceil(intermediate_size/self.argmin_threads[-1]) * batch_size)
+
+            intermediate_size = math.ceil(intermediate_size / self.CUDA_THREADS)
+            self.argmin_inters.append(intermediate_size)
+
+        print(f'int sizes {self.argmin_inters}, threads {self.argmin_threads} blocks {self.argmin_blocks}')
+
+    def _calc_conv_sum_params(self, batch_size, min_data_size, mask_size):
+        conv_total_threads = (mask_size - min_data_size) * batch_size
+
+        if conv_total_threads < self.CUDA_THREADS:
+            self.argmin_threads = int(math.ceil(conv_total_threads / 32) * 32)
+        else:
+            self.conv_block_threads = self.CUDA_THREADS
+
+        self.conv_blocks = math.ceil(conv_total_threads / self.conv_block_threads)
 
 
     def _compile_kernels(self, min_data_size, argmin_block_size):
@@ -60,9 +98,17 @@ class PosReconGPU():
             kernel_sum = 0
             if px < data_stack.shape[0] and mask_pos + data_sizes[px] < mask_stack.shape[1]:
                 for i in range(data_sizes[px]):
-                    kernel_sum += mask_stack[px, mask_pos + i] - data_stack[px, mask_pos + i]
+                    kernel_sum += mask_stack[px, mask_pos + i] - data_stack[px, i]
 
-            output[px, mask_pos] = kernel_sum
+            output[px, mask_pos, 1] = kernel_sum
+            output[px, mask_pos, 0] = px
+            """
+            if mask_pos + data_sizes[px] < mask_stack.shape[1]:
+                output[px, mask_pos, 0] = -1
+            else:
+                output[px, mask_pos, 0] = px
+            """
+            
 
         @cuda.jit
         def argmin_kernel(convs, output):
@@ -73,8 +119,8 @@ class PosReconGPU():
 
             # Block-shared reduction array. 0: Ind, 1: Value
             blk_mem = cuda.shared.array(shape=(argmin_block_size, 2), dtype=numba.float32)
-            blk_mem[cuda.threadIdx.x, 0] = conv_pos
-            blk_mem[cuda.threadIdx.x, 1] = convs[px, conv_pos]
+            blk_mem[cuda.threadIdx.x, 0] = convs[px, conv_pos, 0]
+            blk_mem[cuda.threadIdx.x, 1] = convs[px, conv_pos, 1]
 
             cuda.syncthreads()
 
@@ -92,8 +138,3 @@ class PosReconGPU():
                 output[px, conv_pos, 1] = blk_mem[0, 1]
 
         return  conv_sum_kernel, argmin_kernel
-
-
-
-
-
