@@ -357,6 +357,7 @@ def _decode_batch(args):
         prev_calc_stack['start'] = start
         prev_calc_stack['data'] = data_stack
         prev_calc_stack['mask'] = mask_stack
+        prev_calc_stack['data_sizes'] = data_sizes
 
         if use_gpu:
             prev_calc_stack['cost'] = pos_gpu.calc_batch(sim_stack, data_stack, data_sizes)
@@ -380,7 +381,7 @@ def update_sig_batch_gpu(sig, pos, calc_stacks):
     calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
     pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
     for i in range(len(calc_stacks['cost'])):
-        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
+        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
                                                 sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
 
 def update_sig_batch_cpu(sig, pos, calc_stacks):
@@ -390,7 +391,7 @@ def update_sig_batch_cpu(sig, pos, calc_stacks):
             pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
         except IndexError:
             pass
-        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
+        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
                                                  sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
 
 
