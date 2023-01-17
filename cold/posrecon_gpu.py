@@ -4,17 +4,43 @@ import numpy as np
 import math
 
 class PosReconGPU():
+    """
+    Class to hold JIT compiled cuda kernels precomputed launch parameters,
+    and surrounding code to execute the kernels. 
+
+    Some elements must be statically defined such as the size of the 
+    shared array so a class is appropriate for storing these global 
+    parameters.
+    """
+
     # Recommeneded 128-512, always multiple of 32. Seems good for A100
     CUDA_THREADS = 256
     MIN_CUDA_THREADS = 32
 
     def __init__(self, batch_size, min_data_size, mask_size):
+        """
+        Take in some initial shapes based on the batch size and precomputed
+        expected data sizes. 
+
+        Then compute the cuda kernel launch parameters and use them to JIT
+        compile the kernels. Store pointers to the kernels 
+        """
         self.min_data_size = min_data_size
         self._calc_cuda_params(batch_size, min_data_size, mask_size)
         self.conv_sum_kernel, self.argmin_kernel = self._compile_kernels(min_data_size,
                                                                          self.CUDA_THREADS)
 
     def calc_batch(self, mask_stack, data_stack, data_sizes):
+        """
+        Calculate a batch of pos. Initializes the nessesary GPU memory,
+        moves the data to the GPU, and execuets the nessesary kernels. 
+
+        Kernels and GPU launch parameters must be comiled and precomputed
+        before this method can be called. 
+
+        #TODO: currently syncronous. Data return call could be moved to another
+               method call to allow CPU to run ahead
+        """
 
         batch_size = mask_stack.shape[0]
         mask_size = mask_stack.shape[1]
@@ -57,6 +83,10 @@ class PosReconGPU():
 
 
     def _calc_cuda_params(self, batch_size, min_data_size, mask_size):
+        """
+        Calcualte through each kernel's required parameters. 
+        If more kernels are added, add their parameter calculations here. 
+        """
         self.conv_size = mask_size - min_data_size
         self._calc_conv_sum_params(batch_size, min_data_size, mask_size)
         self._calc_argmin_params(batch_size, self.conv_size)
@@ -68,13 +98,14 @@ class PosReconGPU():
         self.argmin_inters = []
         
         intermediate_size = conv_size
+        # Calculate the launch parameters for each call of the reduction kernel
         while intermediate_size * self.CUDA_THREADS > self.CUDA_THREADS:
             if intermediate_size >= self.CUDA_THREADS:
                 self.argmin_threads.append(self.CUDA_THREADS)
             elif intermediate_size <= self.MIN_CUDA_THREADS:
                 self.argmin_threads.append(self.MIN_CUDA_THREADS)
             else:
-                # Round to nearest power of 2
+                # Kernel only works with Tx in powers of 2, Round to nearest power of 2.
                 self.argmin_threads.append(1<<(intermediate_size-1).bit_length())
 
             self.argmin_blocks.append(math.ceil(intermediate_size/self.argmin_threads[-1]))
@@ -94,14 +125,29 @@ class PosReconGPU():
 
 
     def _compile_kernels(self, min_data_size, argmin_block_size):
+        """
+        Take in precomputed parameters and compile the kernels.
+        """
 
         @cuda.jit
         def conv_sum_kernel(mask_stack, data_stack, data_sizes, output):
+            """
+            Kernel to compute the initial subtraction between data and the mask frame. 
+            Stores the output in a [px, mask-idx, 2] shaped array. 
+
+            If the data is scaled, stores extra elements as -1 to be ignored by
+            the reduction kernel. 
+
+            Expected to be called once with (ThreadsX * BlocksX) > output.size
+
+            Output[:, : 0] -> indicies
+            Output[:, : 1] -> values
+            """
             pos = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
             mask_pos = pos % (output.shape[1])
             px = int(pos / (mask_stack.shape[1] - min_data_size))
 
-            if px < data_stack.shape[0]:
+            if px < data_stack.shape[0]: # Thread boundery check
                 if mask_pos + data_sizes[px] < mask_stack.shape[1]:
                     kernel_sum = 0
                     for i in range(data_sizes[px]):
@@ -114,6 +160,20 @@ class PosReconGPU():
             
         @cuda.jit
         def argmin_kernel(convs, output):
+            """
+            Reduction kernel to take the argmin with dynamic padding logic
+            for different data shapes. Uses block memory to perform reduction.
+
+            Reduction design based on this:
+                https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
+            
+            Expected to be called log n times based on the input size and blockDim.
+            Intermediate data is storeed in the GPU-wide output memory. 
+            Block shape should be 1Y,NX dim. Data sharing is only needed in the X dim.
+
+            Output[:, : 0] -> indicies
+            Output[:, : 1] -> values
+            """
             pos_x = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
             pos_y = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
             tid = cuda.threadIdx.x

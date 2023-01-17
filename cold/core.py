@@ -281,10 +281,6 @@ def _decode_batch(args):
     the cost_batch function, (the expensive calculation)
     and then the output is fed through sigrecon. 
 
-    NOTE: Memory management is critical in this section. If 
-          non-result variables stay in scope between
-          iterations of the outer loop, this can easily
-          OOM hardware. 
     """
     data = args[0]
     pos = args[1]
@@ -363,21 +359,26 @@ def _decode_batch(args):
             prev_calc_stack['cost'] = pos_gpu.calc_batch(sim_stack, data_stack, data_sizes)
         else:
             prev_calc_stack['cost'] = cost_batch_cpu(sim_stack, data_stack, data_sizes)
+            update_sig_batch_cpu(sig, pos, stack)
+
 
         cost_stacks.append(prev_calc_stack)
         prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
                                   
-
-    for stack in cost_stacks:
-        if use_gpu:
+    
+    if use_gpu:
+        for stack in cost_stacks:
             update_sig_batch_gpu(sig, pos, stack)
-        else:
-            update_sig_batch_cpu(sig, pos, stack)
 
 
     return pos, sig
 
 def update_sig_batch_gpu(sig, pos, calc_stacks):
+    """
+    Unpack the batch and perform sigrecon.
+
+    Expects GPU output data structure of precalculated pos's. 
+    """
     calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
     pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
     for i in range(len(calc_stacks['cost'])):
@@ -385,6 +386,11 @@ def update_sig_batch_gpu(sig, pos, calc_stacks):
                                                 sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
 
 def update_sig_batch_cpu(sig, pos, calc_stacks):
+    """
+    Unpack the batch and perform sigrecon.
+
+    Expects CPU output structure with pos's not calculated.
+    """
     for i in range(len(calc_stacks['cost'])):
         cs = calc_stacks['costsize'][i]
         try:

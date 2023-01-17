@@ -39,6 +39,11 @@ class Mask:
 
 
 def discmask(geo, ind):
+    """
+    Checks for cached masks, and if not cached
+    generates and caches the mask. See cache definition
+    for details.
+    """
     global MASK_CACHE
 
     if geo['mask']['path'] not in MASK_CACHE:
@@ -62,15 +67,23 @@ def discmask(geo, ind):
 
 
 def compute_ind_offset(mask, full_offset):
-        kernel = signal.tukey(full_offset, alpha=0)
-        kernel /= kernel.sum()
-        mask_out = signal.convolve(mask.mask_base, kernel, 'same')
-        mask_out = ndimage.zoom(mask_out, 1 / mask.factor, order=1)
-        mask_out = core.invert(mask_out)
-        return mask_out
+    """
+    Take a masked kernel base and calcuate the mask
+    with the defined offset. 
+    """
+    kernel = signal.tukey(full_offset, alpha=0)
+    kernel /= kernel.sum()
+    mask_out = signal.convolve(mask.mask_base, kernel, 'same')
+    mask_out = ndimage.zoom(mask_out, 1 / mask.factor, order=1)
+    mask_out = core.invert(mask_out)
+    return mask_out
 
 
 def build_mask(geo):
+    """
+    Compute the mask, and the primitives for the mask cache. 
+    Also, precalculate and cache the mask at offset 0.
+    """
     # Mask create
     seq = np.load(geo['mask']['path'])
     dseq = np.diff(seq)
