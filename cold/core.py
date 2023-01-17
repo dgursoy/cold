@@ -11,6 +11,7 @@ from skimage.feature import blob_log
 import multiprocessing
 import jax.numpy as jnp
 import jax
+import cold.posrecon_gpu as posrecon_gpu
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -299,6 +300,14 @@ def _decode_batch(args):
 
     calc_regpar = algo['pos']['regpar'] != 0
 
+    # Calculate max data sizes
+    max_data = round(data[0].size * np.max(scl))
+    min_data = round(data[0].size * np.min(scl))
+    # Precompute Mask
+    msk = cmask.discmask(geo, ind[0])
+
+    pos_gpu = posrecon_gpu.PosReconGPU(batch_size, min_data, msk.shape[0])
+
     cost_stacks = []
     prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
     for start in range(0, data.shape[0], batch_size):
@@ -311,18 +320,9 @@ def _decode_batch(args):
         mask_stack = []
         costsize_stack = []
 
-        # Precompute Mask
-        msk = cmask.discmask(geo, ind[0])
-
-        # Calculate max data sizes
-        max_data = round(data[0].size * np.max(scl[start:end]))
-        min_data = round(data[0].size * np.min(scl[start:end]))
-        if abs((max_data/min_data) - 1) > 0.05:
-            logging.warn(f'WARNING: High difference in scl detected!')
-            # TODO: Find way to fix or jit batch
-
         data_stack = np.zeros((end-start, max_data))
         sim_stack = np.zeros((end-start, msk.size))
+        data_sizes = np.zeros((batch_size,))
 
         for m in range(start, end):
             msk = cmask.discmask(geo, ind[m])
@@ -338,6 +338,7 @@ def _decode_batch(args):
 
 
             data_stack[m-start, :data_slice.size] = data_slice
+            data_sizes[m-start] = data_slice.size
             if calc_regpar:
                 range_stack.append(mrange)
     
@@ -346,34 +347,31 @@ def _decode_batch(args):
 
         # Don't request data from the GPU until AFTER next batch
         # is prepared. CPU and GPU can operate in parallel (async dispatch)
-        if prev_calc_stack['cost'] is not None:
-            #jax.block_until_ready(prev_calc_stack['cost'])
-            #prev_calc_stack['cost'] = np.asarray(prev_calc_stack['cost'])
-            prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
-            cost_stacks.append(prev_calc_stack)
-            prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
+        # TODO: Stream async dispatch
 
         prev_calc_stack['costsize'] = costsize_stack
         prev_calc_stack['start'] = start
         prev_calc_stack['data'] = data_stack
         prev_calc_stack['mask'] = mask_stack
 
-        prev_calc_stack['cost'] = cost_batch(sim_stack, data_stack, range_stack, pos[start:end], 
-                                             algo['pos']['regpar'], calc_regpar)
+        prev_calc_stack['cost'] = pos_gpu.calc_batch(sim_stack, data_stack, data_sizes)
+        cost_stacks.append(prev_calc_stack)
+        prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
+                                  
 
     # Block to prevent GPU streaming
     # TODO: Sill seems to be streaming, but rest are efficient.
     #jax.block_until_ready(prev_calc_stack['cost'])
-    prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
+    #prev_calc_stack['cost'] = jax.device_get(prev_calc_stack['cost'])
 
     # Perform final pos/sig update.
-    cost_stacks.append(prev_calc_stack)
     for stack in cost_stacks:
         update_sig_batch(sig, pos, stack)
 
     return pos, sig
 
 def update_sig_batch(sig, pos, calc_stacks):
+    calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
     pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
     for i in range(len(calc_stacks['cost'])):
         sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
