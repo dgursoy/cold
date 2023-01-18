@@ -357,14 +357,12 @@ def _decode_batch(args):
 
         if use_gpu:
             prev_calc_stack['cost'] = pos_gpu.calc_batch(sim_stack, data_stack, data_sizes)
+            cost_stacks.append(prev_calc_stack)
         else:
             prev_calc_stack['cost'] = cost_batch_cpu(sim_stack, data_stack, data_sizes)
-            update_sig_batch_cpu(sig, pos, stack)
+            update_sig_batch_cpu(sig, pos, prev_calc_stack)
 
-
-        cost_stacks.append(prev_calc_stack)
         prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
-                                  
     
     if use_gpu:
         for stack in cost_stacks:
