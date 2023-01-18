@@ -58,7 +58,7 @@ def discmask(geo, ind):
     pz = np.dot(p0, mask.mz) 
     offset = np.abs(geo['mask']['thickness'] * px / py)
     
-    full_offset = int(mask.factor * offset / geo['mask']['resolution'])
+    full_offset = max(int(mask.factor * offset / geo['mask']['resolution']), 0)
 
     if full_offset not in mask.offset_cache:
         mask.offset_cache[full_offset] = compute_ind_offset(mask, full_offset)
@@ -149,7 +149,7 @@ def build_mask(geo):
         mask[begin] = begin - pt1[m, 0] / geo['mask']['resolution']
         mask[end+1] = pt1[m, 1] / geo['mask']['resolution'] - end
     factor = 10
-    mask_0 = np.copy(mask)
+    mask_0 = core.invert(np.copy(mask))
     mask = ndimage.zoom(mask, factor, order=1)
 
     # Final preprocessing assuming no offset
