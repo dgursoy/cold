@@ -168,10 +168,10 @@ class PosReconGPU():
                 https://developer.download.nvidia.com/assets/cuda/files/reduction.pdf
             
             Expected to be called log n times based on the input size and blockDim.
-            Intermediate data is storeed in the GPU-wide output memory. 
+            Intermediate data is stored in the GPU-wide output memory. 
             Block shape should be 1Y,NX dim. Data sharing is only needed in the X dim.
 
-            Output[:, : 0] -> indicies
+            Output[:, : 0] -> indices
             Output[:, : 1] -> values
             """
             pos_x = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
@@ -179,7 +179,7 @@ class PosReconGPU():
             tid = cuda.threadIdx.x
             
             # Block-shared reduction array. 0: Ind, 1: Value
-            blk_mem = cuda.shared.array(shape=(argmin_block_size, 2), dtype=numba.float32)
+            blk_mem = cuda.shared.array(shape=(argmin_block_size, 2), dtype=numba.float64)
             cuda.syncthreads()
 
             if pos_x < convs.shape[1]:
@@ -198,10 +198,13 @@ class PosReconGPU():
                     and tid + conv_offset < argmin_block_size # skip if oob
                     and pos_x + conv_offset < convs.shape[1] # skip if global oob
                     and blk_mem[tid + conv_offset, 0] != -1 # skip if partner is ignored
-                    and blk_mem[tid, 1] > blk_mem[tid + conv_offset, 1]): # value check
+                    and blk_mem[tid, 1] >= blk_mem[tid + conv_offset, 1]): # value check
                     
-                    blk_mem[tid, 0] = blk_mem[tid + conv_offset, 0]
-                    blk_mem[tid, 1] = blk_mem[tid + conv_offset, 1]
+                    if blk_mem[tid, 1] == blk_mem[tid + conv_offset, 1]:
+                        blk_mem[tid, 0] = min(blk_mem[tid, 0], blk_mem[tid + conv_offset, 0])
+                    else:
+                        blk_mem[tid, 0] = blk_mem[tid + conv_offset, 0]
+                        blk_mem[tid, 1] = blk_mem[tid + conv_offset, 1]
 
                 conv_offset = int(conv_offset / 2)
                 cuda.syncthreads()
