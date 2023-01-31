@@ -42,8 +42,7 @@ def load(file, collapsed=True, index=None):
             vals = loadh5files2(files, file['h5']['key'], file['frame'])
     else:
         if file['ext'] == 'h5':
-            begin, end, step = file['range']
-            vals = loadh5(file['path'], file['h5']['key'])[begin:step:end]
+            vals = load_stacked_frame(file['path'], file['range'], file['h5']['key'], file['frame'])
             vals = np.swapaxes(vals, 0, 2)
             vals = np.swapaxes(vals, 0, 1)
             vals = vals.copy()
@@ -78,6 +77,13 @@ def loadh52(file, key, frame):
     import h5py
     f = h5py.File(file, 'r')
     value = f[key][frame[0]:frame[1], frame[2]:frame[3]]
+    logging.info("Loaded: " + str(file) + "Frame: " + str(frame))
+    return value
+
+def load_stacked_frame(file, i_range, key, frame):
+    import h5py
+    with h5py.File(file, 'r') as h5_f:
+        value = h5_f[key][i_range[0]:i_range[1]:i_range[2], frame[0]:frame[1], frame[2]:frame[3]]
     logging.info("Loaded: " + str(file) + "Frame: " + str(frame))
     return value
 
