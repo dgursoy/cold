@@ -29,18 +29,9 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         pos = np.zeros((data.shape[0], ), dtype='float32')
         logging.info('Initialized: Positions')
 
-    # Initialize sig
-    maxsize = algo['sig']['init']['maxsize']
-    avgsize = algo['sig']['init']['avgsize']
-    sig = np.zeros(maxsize, dtype='float32')
-    first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
-    window = signal.windows.hann(int(avgsize))
-    window /= sum(window)
-    sig[first:first+avgsize] = window
-    factor = 1 / geo['mask']['resolution']
-    sig = stretcharr(sig, factor)
-    sig = np.tile(sig, (data.shape[0], 1))
-    logging.info('Initialized: Signal')
+    # Initialize ene
+    ene = np.zeros((data.shape[0], ), dtype='float32')
+    logging.info('Initialized: Energy')
 
     # Initialize new scl
     scl = np.ones((ind.shape[0], ), dtype='float32')
@@ -93,8 +84,10 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
 
     # Rotation of mask axes
     mx = np.array([1, 0, 0], dtype='float32')
+    my = np.array([0, 1, 0], dtype='float32')
     mz = np.array([0, 0, 1], dtype='float32')
     mx = np.dot(rotmat, mx)
+    my = np.dot(rotmat, my)
     mz = np.dot(rotmat, mz) 
 
     for m in range(ind.shape[0]):
@@ -115,6 +108,44 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         scl[m] = factor * step
     logging.info('Initialized: Scales')
 
+    # Initialize sig
+    maxsize = algo['sig']['init']['maxsize']
+    sig = np.zeros(maxsize, dtype='float32')
+    sig = np.tile(sig, (data.shape[0], 1))
+    for m in range(ind.shape[0]):
+        # Detector pixel position
+        p0 = pix2pos(ind[m], geo) # [<->, dis2det, v^]
+
+        angpix = np.arctan(p0[0] / p0[1]) 
+        angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
+        xxx = np.cos(angpix) / np.cos(angpix + angmsk)
+
+        zoomin = 10
+        _sig = np.zeros(maxsize * zoomin, dtype='float32')
+        avgsize = algo['sig']['init']['avgsize'] * xxx * zoomin
+        first = int((maxsize * zoomin - 1) * 0.5 - avgsize * 0.5)
+        window = signal.windows.tukey(int(avgsize), alpha=0.1)
+        window /= sum(window)
+        _sig[first:first+int(avgsize)] = window
+        sig[m] = ndimage.zoom(_sig * zoomin, 1 / zoomin, order=1)
+        sig[m] /= sum(sig[m])
+
+    factor = int(1 / geo['mask']['resolution'])
+    sig = stretcharr(sig, factor)
+    logging.info('Initialized: Signal')
+    
+    # # Initialize sig
+    # maxsize = algo['sig']['init']['maxsize']
+    # avgsize = algo['sig']['init']['avgsize']
+    # sig = np.zeros(maxsize, dtype='float32')
+    # first = int((maxsize - 1) * 0.5 - avgsize * 0.5)
+    # window = signal.windows.tukey(int(avgsize), alpha=0.0)
+    # window /= sum(window)
+    # sig[first:first+avgsize] = window
+    # factor = 1 / geo['mask']['resolution']
+    # sig = stretcharr(sig, factor)
+    # sig = np.tile(sig, (data.shape[0], 1))
+    # logging.info('Initialized: Signal')
         
     # Initialize bases
     size = sig.shape[1]
@@ -139,6 +170,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     scl = partition(scl, comp['workers'])
     data = partition(data, comp['workers'])
     ind = partition(ind, comp['workers'])
+    ene = partition(ene, comp['workers'])
     datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
     logging.info(
         "Data partitioned: " +
@@ -155,13 +187,14 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         base = [base] * comp['workers']
         geo = [geo] * comp['workers']
 
-        args = [data, pos, sig, scl, algo, base, geo, ind]
+        args = [data, pos, sig, scl, algo, base, geo, ind, ene]
         results = runpar(_decode, args, comp['workers'])
 
         # Unpack results and rescale them
         for m in range(comp['workers']):
             pos[m] = results[m][0]
             sig[m] = results[m][1]
+            ene[m] = results[m][2]
         
     elif comp['server'] == 'remote':
         from funcx.sdk.client import FuncXClient
@@ -210,11 +243,12 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     sig = pack(sig) 
     scl = pack(scl) 
     ind = pack(ind) 
+    ene = pack(ene)
 
-    if debug is True:
-        plotresults(data, ind, geo[0], pos, sig, scl, algo[0])
+    if debug == True:
+        plotresults(data, ind, geo[0], pos, sig, scl, algo[0], ene)
 
-    return pos, sig, scl
+    return pos, sig, scl, ene
 
 
 def _decode(args):
@@ -226,28 +260,56 @@ def _decode(args):
     base = args[5]
     geo = args[6]
     ind = args[7]
+    ene = args[8]
 
     from cold import pixdecode
     import logging
     for m in range(data.shape[0]):
-        pos[m], sig[m] = pixdecode(
-            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], m)
+        pos[m], sig[m], ene[m] = pixdecode(
+            data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], ene[m], m)
         logging.info('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
+            ' ene=' + str(ene[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
-    return pos, sig
+    return pos, sig, ene
 
 
-def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ix):
+def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ene, ix):
     """The main function for decoding pixel data."""
-
     msk = cmask.discmask(geo, ind)
     data = normalize(data)
     data = ndimage.zoom(data, scale, order=1)
     pos = posrecon(data, msk, pos, sig, algo)
-    sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
-    return pos, sig
+
+    if algo['ene']['recon'] is True:
+        ene = enerecon(data, pos, sig, scale, algo, geo, ind)
+        msk = cmask.discmask(geo, ind, exact=True, energy=ene)
+
+    if algo['sig']['recon'] is True:
+        sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
+
+    return pos, sig, ene
+
+
+def enerecon(data, pos, sig, scl, algo, geo, ind):
+    _data = ndimage.zoom(data, scl, order=1)
+    ex = algo['ene']['range']
+    enerange = np.arange(*ex)
+    costsize = len(enerange)
+    cost = np.zeros((costsize), dtype='float32')
+    for m in range(costsize):
+        msk = cmask.discmask(geo, ind, exact=True, energy=enerange[m])
+        sim = signal.convolve(msk, sig, 'same')
+        _sim = ndimage.shift(sim, -pos, order=1)[0:_data.size]
+        if algo['ene']['method'] == 'lsqr':
+            cost[m] = np.sum(np.power(_data - _sim, 2))
+    try:
+        ii = np.where(cost.min() == cost)[0][0]
+    except IndexError:
+        ii = 0
+        pass
+    return enerange[ii]
 
 
 def posrecon(data, msk, pos, sig, algo):
@@ -275,7 +337,10 @@ def sigrecon(data, msk, pos, sig, algo, base, ix):
             end =  begin + sig.size
             kernel[m] = msk[begin:end]
         if algo['sig']['method'] == 'splines':
+            # np.save('tmp/analysis/kernel.npy', kernel)
             coefs = optimize.nnls(np.dot(kernel, base), data)[0][::-1]
+            # np.save('tmp/analysis/spline.npy', np.dot(kernel, base))
+            # np.save('tmp/analysis/base.npy', base)
             sig = np.dot(base, coefs)
             sig /= sig.sum()
     else:
@@ -409,10 +474,13 @@ def stretcharr(arr, factor, order=1):
     return arr / factor
 
 
-def plotresults(dat, ind, geo, pos, sig, scl, algo):
+def plotresults(dat, ind, geo, pos, sig, scl, algo, ene):
     npix = ind.shape[0]
     for m in range(npix):
-        msk = cmask.discmask(geo, ind[m])
+        if algo['ene']['recon'] is True:
+            msk = cmask.discmask(geo, ind[m], exact=True, energy=ene[m])
+        else:
+            msk = cmask.discmask(geo, ind[m])
         if pos[m] > 0:
             if algo['pos']['method'] == 'lsqr':
                 plotlsqr(
@@ -445,18 +513,22 @@ def plotlsqr(dat, ind, msk, pos, sig, scl, id):
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
-    msk = signal.convolve(msk, sig, 'same')
+    sim = signal.convolve(msk.copy(), sig, 'same')
+    sim /= sim.max()
 
     plt.subplot(312)
-    plt.step(msk[300:6060], 'tab:blue', linewidth=1.3)
+    plt.step(msk[300:6060], 'tab:green', linewidth=0.6)
+    plt.step(sim[300:6060], 'tab:blue', linewidth=1)
     plt.step(_dat[300:6060], 'tab:red', linewidth=0.6)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
 
     _msk = ndimage.shift(msk, -pos, order=1)[0:dat.size]
+    _sim = ndimage.shift(sim, -pos, order=1)[0:dat.size]
 
     plt.subplot(313)
-    plt.step(_msk, 'tab:blue', linewidth=1.3)
+    plt.step(_msk, 'tab:green', linewidth=0.6)
+    plt.step(_sim, 'tab:blue', linewidth=1)
     plt.step(dat, 'tab:red', linewidth=0.6)
     plt.grid('on')
     plt.ylim((-0.5, 1.5))
@@ -471,7 +543,6 @@ def plotlsqr(dat, ind, msk, pos, sig, scl, id):
         incr += 1
     plt.savefig(filename, dpi=480)
     plt.close()
-
 
 def calibrate(data, ind, pos, sig, geo, comp, shift=0, depw=None):
     # Initialize 
@@ -607,10 +678,12 @@ def _footprint(dat, ind, pos, sig, shift, geo):
     intersectionsource1 = intersect2(s1, s2, p0, p1, p2)
     intersectionx = intersectionsource1[0]
     
-    # Magnification
-    _p1 = p1 + direction * geo['scanner']['step']
-    _p2 = p2 + direction * geo['scanner']['step']
-    intersectionsource2 = intersect2(s1, s2, p0, _p1, _p2)
+    # # Magnification
+    # _p1 = p1 + direction * geo['scanner']['step']
+    # _p2 = p2 + direction * geo['scanner']['step']
+    # intersectionsource2 = intersect2(s1, s2, p0, _p1, _p2)
+    # magnification = np.sqrt(np.sum(np.power(intersectionsource2 - intersectionsource1, 2)))
+    magnification = 1
     
     # Discrete grid along the source beam
     gr = geo['source']['grid']
@@ -618,13 +691,16 @@ def _footprint(dat, ind, pos, sig, shift, geo):
     extgrid = np.arange(gr[0] - 1.0, gr[1] + 1.0, gr[2])
 
     # Stretch factor for magnification
-    factor = np.sqrt(np.sum(np.power(intersectionsource2 - intersectionsource1, 2)))
-    _sig = stretcharr(sig, factor * geo['mask']['resolution'] / (1e3 * gr[2]), order=1)
+    angpix = np.arctan(p0[0] / p0[1]) 
+    angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
+    xxx = np.cos(angpix) / np.cos(angpix + angmsk)
+    _sig = stretcharr(sig, magnification * geo['mask']['resolution'] / (1e3 * gr[2] * xxx), order=1)
+    # print (factor, xxx, sig.shape, _sig.shape)
 
     # Index along the beam
     dx = np.argmin(np.abs(extgrid - intersectionx))
 
-    # Adjustment based on intersectionx
+    # Sub-pixel adjustment based on intersectionx
     sx = (intersectionx / gr[2] - np.round(intersectionx / gr[2]))
     _sig = ndimage.shift(_sig, sx, order=1)
 

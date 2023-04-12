@@ -4,6 +4,7 @@ import numpy as np
 from scipy import signal, ndimage
 import logging
 import warnings
+import xraydb
 warnings.filterwarnings('ignore')
 
 
@@ -14,9 +15,20 @@ __docformat__ = 'restructuredtext en'
 from cold import core
 
 
-def discmask(geo, ind):
+PLANCK_CONSTANT = 6.58211928e-19  # [keV*s]
+SPEED_OF_LIGHT = 299792458e+2  # [cm/s]
+
+
+def wavelength(energy):
+    """Return the wavelength [cm] for a given energy [keV]."""
+    return 2 * np.pi * PLANCK_CONSTANT * SPEED_OF_LIGHT / energy
+
+
+def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     # Mask create
     seq = np.load(geo['mask']['path'])
+    if geo['mask']['reversed'] is True:
+        seq = np.flip(seq)
     dseq = np.diff(seq)
     pt1 = np.zeros((64, 2))
     ind0 = 0
@@ -36,8 +48,9 @@ def discmask(geo, ind):
     if seq[-1] == 1:
         pointer += geo['mask']['bitsizes'][seq[-1]]
         pt1[ind0, 1] = pointer
-    pt1[:, 0] -= geo['mask']['widening'] * 0.5
-    pt1[:, 1] += geo['mask']['widening'] * 0.5
+    if np.abs(geo['mask']['widening']) > 0:
+        pt1[:, 0] -= geo['mask']['widening'] * 0.5
+        pt1[:, 1] += geo['mask']['widening'] * 0.5
 
     # Rotation vector (intrinsic-yzx)
     alpha = geo['mask']['focus']['angley'] * np.pi / 180
@@ -67,7 +80,8 @@ def discmask(geo, ind):
     px = np.dot(p0, mx) 
     py = np.dot(p0, my) 
     pz = np.dot(p0, mz) 
-    offset = np.abs(geo['mask']['thickness'] * px / py)
+    offset = np.abs(geo['mask']['thickness'] * px / py) 
+
 
     # Discretisize mask
     grid = creategrid(geo['mask'])
@@ -91,20 +105,33 @@ def discmask(geo, ind):
         kernel = signal.tukey(int(factor * offset / geo['mask']['resolution']), alpha=0)
         kernel /= kernel.sum()
         mask = signal.convolve(mask, kernel, 'same')
+
+    if exact == True:
+        angpix = np.arctan(p0[0] / p0[1]) 
+        angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
+        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
+        mask = np.exp(-mu * mask)
+        mask = core.invert(mask)
+
     mask = ndimage.zoom(mask, 1 / factor, order=1)
 
-    # Invert
-    mask = core.invert(mask)
+    if normalized == True:
+        mask -= np.min(mask)
+        mask /= np.max(mask)
 
+    if inverted == True:
+        mask = core.invert(mask)
     return mask
 
 
 
-def mask(mask):
+def mask(mask, inverted=True):
     """Returns a mask."""
     grid = creategrid(mask)
     vals = gridvals(mask, grid)
     vals, grid = padmask(mask, vals, mask['pad'] / mask['resolution'])
+    if inverted == True:
+        vals = core.invert(vals)
     return vals
 
 
@@ -148,6 +175,8 @@ def loadmask(mask):
 
 def gridvals(mask, grid):
     sequence = np.load(mask['path'])
+    if mask['reversed'] is True:
+        sequence = np.flip(sequence)
     vals = np.zeros(grid.shape, dtype='float32')
     nbits = np.size(sequence)
     pointer = 0 
