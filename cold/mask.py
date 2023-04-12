@@ -27,6 +27,8 @@ Layer 2: Ind Offset Cache
     V: Precomputed masks at offset
 """
 MASK_CACHE = {}
+PLANCK_CONSTANT = 6.58211928e-19  # [keV*s]
+SPEED_OF_LIGHT = 299792458e+2  # [cm/s]
 
 @dataclass
 class Mask:
@@ -39,7 +41,7 @@ class Mask:
     factor: int
 
 
-def discmask(geo, ind):
+def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     """
     Checks for cached masks, and if not cached
     generates and caches the mask. See cache definition
@@ -64,7 +66,18 @@ def discmask(geo, ind):
     if full_offset not in mask.offset_cache:
         mask.offset_cache[full_offset] = compute_ind_offset(mask, full_offset)
     
-    return mask.offset_cache[full_offset]
+    out_mask = np.copy(mask.offset_cache[full_offset])
+    if exact:
+        out_mask = exact_mask(mask, p0, energy, geo , mask.factor)
+    
+    if normalized: 
+        out_mask -= np.min(out_mask)
+        out_mask /= np.max(out_mask)
+
+    if inverted:
+        mask = core.invert(out_mask)
+    
+    return out_mask
 
 
 def compute_ind_offset(mask, full_offset):
@@ -79,23 +92,17 @@ def compute_ind_offset(mask, full_offset):
     mask_out = core.invert(mask_out)
     return mask_out
 
+def wavelength(energy):
+    """Return the wavelength [cm] for a given energy [keV]."""
+    return 2 * np.pi * PLANCK_CONSTANT * SPEED_OF_LIGHT / energy
+
 
 def build_mask(geo):
     """
     Compute the mask, and the primitives for the mask cache. 
     Also, precalculate and cache the mask at offset 0.
     """
-PLANCK_CONSTANT = 6.58211928e-19  # [keV*s]
-SPEED_OF_LIGHT = 299792458e+2  # [cm/s]
 
-
-def wavelength(energy):
-    """Return the wavelength [cm] for a given energy [keV]."""
-    return 2 * np.pi * PLANCK_CONSTANT * SPEED_OF_LIGHT / energy
-
-
-# TODO ACC: Seperate energy calculation and apply cache
-def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     # Mask create
     seq = np.load(geo['mask']['path'])
     if geo['mask']['reversed'] is True:
@@ -146,13 +153,6 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     my = np.dot(rotmat, my)
     mz = np.dot(rotmat, mz)
 
-    # Offset calculation
-    p0 = core.pix2pos(ind, geo) # [<->, dis2det, v^]
-    px = np.dot(p0, mx) 
-    py = np.dot(p0, my) 
-    pz = np.dot(p0, mz) 
-    offset = np.abs(geo['mask']['thickness'] * px / py) 
-
 
     # Discretisize mask
     grid = creategrid(geo['mask'])
@@ -163,7 +163,7 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     pt1[:, 0] += geo['mask']['pad']
     pt1[:, 1] += geo['mask']['pad']
 
-    # Convolve
+     # Convolve
     for m in range(pt1.shape[0]):
         begin = int(np.ceil(pt1[m, 0] / geo['mask']['resolution']))
         end = int(np.floor(pt1[m, 1] / geo['mask']['resolution']))
@@ -173,28 +173,20 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     factor = 10
     mask_0 = core.invert(np.copy(mask))
     mask = ndimage.zoom(mask, factor, order=1)
-    if int(factor * offset / geo['mask']['resolution']) > 0:
-        kernel = signal.tukey(int(factor * offset / geo['mask']['resolution']), alpha=0)
-        kernel /= kernel.sum()
-        mask = signal.convolve(mask, kernel, 'same')
 
-    if exact == True:
-        angpix = np.arctan(p0[0] / p0[1]) 
-        angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
-        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
-        mask = np.exp(-mu * mask)
-        mask = core.invert(mask)
-
-    mask = ndimage.zoom(mask, 1 / factor, order=1)
-
-    if normalized == True:
-        mask -= np.min(mask)
-        mask /= np.max(mask)
-
-    if inverted == True:
-        mask = core.invert(mask)
+    # Final preprocessing assuming no offset
 
     return Mask(mask, {0:mask_0}, mx, my, mz, pt1, factor)
+
+
+def exact_mask(mask, p0, energy, geo, factor):
+    angpix = np.arctan(p0[0] / p0[1]) 
+    angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
+    mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
+    mask = np.exp(-mu * mask)
+    mask = core.invert(mask)
+
+    mask = ndimage.zoom(mask, 1 / factor, order=1)
 
 
 def mask(mask, inverted=True):
