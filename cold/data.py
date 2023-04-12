@@ -46,8 +46,15 @@ def load(file, collapsed=True, index=None):
             vals = np.swapaxes(vals, 0, 2)
             vals = np.swapaxes(vals, 0, 1)
             vals = vals.copy()
+        elif file['ext'] == 'tiff':
+            import dxchange
+            begin, end, step = file['range']
+            vals = dxchange.read_tiff(file['path'])
+            vals = np.swapaxes(vals, 0, 2)
+            vals = np.swapaxes(vals, 0, 1)
+            vals = vals.copy()
     if index is None:
-        index = cherrypickpixels2(vals, file['threshold'], file['frame'])
+        index = cherrypickpixels2(vals, file['threshold'])
     if collapsed is True:
         vals = collapse(vals, index)
         datasize = vals.shape[0] * vals.shape[1] * 4e-6 # [MB]
@@ -88,10 +95,10 @@ def load_stacked_frame(file, i_range, key, frame):
     return value
 
 
-def cherrypickpixels2(data, threshold, frame):
-    """Returns pixel indices above a threshold and inside a frame."""
+def cherrypickpixels2(data, threshold):
+    """Returns pixel indices above a threshold=."""
     pixels = tagpixels2(data, threshold)
-    index = getindices2(pixels, frame)
+    index = getindices2(pixels)
     return index
 
 
@@ -104,7 +111,7 @@ def tagpixels2(data, threshold):
     return pixels
 
 
-def getindices2(pixels, frame):
+def getindices2(pixels):
     """Computes the indices for tagged pixels from a binary image."""
     ix, iy = np.where(pixels == 1)
     index = np.array([ix, iy], dtype='int32').T
