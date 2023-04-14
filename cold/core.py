@@ -169,7 +169,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
     logging.info('Initialized: Spline bases')
 
     if comp['server'] == 'acc':
-        results = _decode_batch([data, pos, sig, scl, algo, base, geo, ind, comp['batch_size'], use_gpu])
+        results = _decode_batch([data, pos, sig, scl, algo, base, geo, ind, ene, comp['batch_size'], use_gpu])
     
     else:
         # Partitioning
@@ -353,9 +353,9 @@ def _decode_batch(args):
     base = args[5]
     geo = args[6]
     ind = args[7]
-    ind = args[7]
-    batch_size = args[8]
-    use_gpu = args[9]
+    ene = args[8]
+    batch_size = args[9]
+    use_gpu = args[10]
 
 
     calc_regpar = algo['pos']['regpar'] != 0
@@ -423,43 +423,52 @@ def _decode_batch(args):
             cost_stacks.append(prev_calc_stack)
         else:
             prev_calc_stack['cost'] = cost_batch_cpu(sim_stack, data_stack, data_sizes)
-            update_sig_batch_cpu(sig, pos, prev_calc_stack)
+            update_sig_batch(sig, pos, ene, stack, geo, ind, scl, is_cpu=True)
 
         prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
     
     if use_gpu:
         for stack in cost_stacks:
-            update_sig_batch_gpu(sig, pos, stack)
+            update_sig_batch(sig, pos, ene, stack, geo, ind, scl, is_cpu=False)
 
 
-    return pos, sig
+    return pos, sig, ene
 
-def update_sig_batch_gpu(sig, pos, calc_stacks):
-    """
-    Unpack the batch and perform sigrecon.
-
-    Expects GPU output data structure of precalculated pos's. 
-    """
-    calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
-    pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
-    for i in range(len(calc_stacks['cost'])):
-        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
-                                                sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
-
-def update_sig_batch_cpu(sig, pos, calc_stacks):
+def update_sig_batch(sig, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
     """
     Unpack the batch and perform sigrecon.
 
     Expects CPU output structure with pos's not calculated.
     """
     for i in range(len(calc_stacks['cost'])):
-        cs = calc_stacks['costsize'][i]
-        try:
-            pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
-        except IndexError:
-            pass
-        sig[calc_stacks['start'] + i] = sigrecon(calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])], calc_stacks['mask'][i], int(pos[calc_stacks['start'] + i]), 
-                                                 sig[calc_stacks['start'] + i], calc_stacks['algo'], calc_stacks['base'], calc_stacks['start'] + i)
+        if is_cpu:
+            cs = calc_stacks['costsize'][i]
+            try:
+                pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
+            except IndexError:
+                pass
+        else:
+            calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
+            pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
+
+        full_idx = calc_stacks['start'] + i
+
+        data = calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])]
+        msk = calc_stacks['mask'][i]
+        pos = int(pos[full_idx])
+        sig = sig[full_idx]
+        algo = calc_stacks['algo']
+        ind = ind_stack[full_idx]
+        scale = scale_stack[full_idx]
+
+
+        if algo['ene']['recon'] is True:
+            ene = enerecon(data, pos, sig, scale, algo, geo, ind)
+            msk = cmask.discmask(geo, ind, exact=True, energy=ene)
+    
+        if algo['sig']['recon'] is True:
+            sig[calc_stacks['start'] + i] = sigrecon(data, msk, pos, 
+                                                    sig, algo, calc_stacks['base'], calc_stacks['start'] + i)
 
 
 def cost_batch_cpu(sim_stack, data_stack, data_sizes):

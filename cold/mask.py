@@ -68,7 +68,7 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     
     out_mask = np.copy(mask.offset_cache[full_offset])
     if exact:
-        out_mask = exact_mask(mask, p0, energy, geo , mask.factor)
+        out_mask = exact_mask(out_mask, p0, energy, geo , mask.factor)
     
     if normalized: 
         out_mask -= np.min(out_mask)
@@ -187,6 +187,8 @@ def exact_mask(mask, p0, energy, geo, factor):
     mask = core.invert(mask)
 
     mask = ndimage.zoom(mask, 1 / factor, order=1)
+
+    return mask
 
 
 def mask(mask, inverted=True):
