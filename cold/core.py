@@ -423,7 +423,7 @@ def _decode_batch(args):
             cost_stacks.append(prev_calc_stack)
         else:
             prev_calc_stack['cost'] = cost_batch_cpu(sim_stack, data_stack, data_sizes)
-            update_sig_batch(sig, pos, ene, stack, geo, ind, scl, is_cpu=True)
+            update_sig_batch(sig, pos, ene, prev_calc_stack, geo, ind, scl, is_cpu=True)
 
         prev_calc_stack = {'cost': None, 'base': base, 'algo': algo}
     
@@ -434,12 +434,16 @@ def _decode_batch(args):
 
     return pos, sig, ene
 
-def update_sig_batch(sig, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
+def update_sig_batch(sig_stack, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
     """
     Unpack the batch and perform sigrecon.
 
     Expects CPU output structure with pos's not calculated.
     """
+    if not is_cpu:
+        calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
+        pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
+
     for i in range(len(calc_stacks['cost'])):
         if is_cpu:
             cs = calc_stacks['costsize'][i]
@@ -447,16 +451,13 @@ def update_sig_batch(sig, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is
                 pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
             except IndexError:
                 pass
-        else:
-            calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
-            pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
 
         full_idx = calc_stacks['start'] + i
 
         data = calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])]
         msk = calc_stacks['mask'][i]
         pos = int(pos[full_idx])
-        sig = sig[full_idx]
+        sig = sig_stack[full_idx]
         algo = calc_stacks['algo']
         ind = ind_stack[full_idx]
         scale = scale_stack[full_idx]
@@ -467,8 +468,8 @@ def update_sig_batch(sig, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is
             msk = cmask.discmask(geo, ind, exact=True, energy=ene)
     
         if algo['sig']['recon'] is True:
-            sig[calc_stacks['start'] + i] = sigrecon(data, msk, pos, 
-                                                    sig, algo, calc_stacks['base'], calc_stacks['start'] + i)
+            sig_stack[calc_stacks['start'] + i] = sigrecon(data, msk, pos, 
+                                                           sig, algo, calc_stacks['base'], calc_stacks['start'] + i)
 
 
 def cost_batch_cpu(sim_stack, data_stack, data_sizes):

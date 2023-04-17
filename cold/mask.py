@@ -70,6 +70,8 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     if exact:
         out_mask = exact_mask(out_mask, p0, energy, geo , mask.factor)
     
+    out_mask = ndimage.zoom(out_mask, 1 / mask.factor, order=1)
+
     if normalized: 
         out_mask -= np.min(out_mask)
         out_mask /= np.max(out_mask)
@@ -88,7 +90,6 @@ def compute_ind_offset(mask, full_offset):
     kernel = signal.tukey(full_offset, alpha=0)
     kernel /= kernel.sum()
     mask_out = signal.convolve(mask.mask_base, kernel, 'same')
-    mask_out = ndimage.zoom(mask_out, 1 / mask.factor, order=1)
     mask_out = core.invert(mask_out)
     return mask_out
 
@@ -176,7 +177,7 @@ def build_mask(geo):
 
     # Final preprocessing assuming no offset
 
-    return Mask(mask, {0:mask_0}, mx, my, mz, pt1, factor)
+    return Mask(mask, {0:mask}, mx, my, mz, pt1, factor)
 
 
 def exact_mask(mask, p0, energy, geo, factor):
@@ -185,8 +186,6 @@ def exact_mask(mask, p0, energy, geo, factor):
     mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
     mask = np.exp(-mu * mask)
     mask = core.invert(mask)
-
-    mask = ndimage.zoom(mask, 1 / factor, order=1)
 
     return mask
 
