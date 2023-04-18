@@ -81,6 +81,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False, use_gpu=False):
     # Scan direction
     rodrot = rotmatrix(geo['scanner']['rot'])
     direction = np.dot(rodrot, geo['scanner']['axis'])
+    mc1 = mc1 + direction * geo['mask']['shift']
     mc2 = mc1 + direction * geo['scanner']['step']
 
     # # Sample origin
@@ -760,7 +761,7 @@ def calibrate(data, ind, pos, sig, geo, comp, shift=0, depw=None):
     return optdist
 
 
-def resolve(data, ind, pos, sig, geo, comp, shift=0):
+def resolve(data, ind, pos, sig, geo, comp):
     """Resolves depth information."""
 
     # Pack arguments as list and run
@@ -768,9 +769,8 @@ def resolve(data, ind, pos, sig, geo, comp, shift=0):
     sig = partition(sig, comp['workers'])
     data = partition(data, comp['workers'])
     ind = partition(ind, comp['workers'])
-    shift = [shift] * comp['workers']
     geo = [geo] * comp['workers']
-    args = [data, ind, pos, sig, shift, geo]
+    args = [data, ind, pos, sig, geo]
     results = runpar(_resolve, args, comp['workers'])
 
     # Unpack results
@@ -790,8 +790,7 @@ def _resolve(args):
     ind = args[1]
     pos = args[2]
     sig = args[3]
-    shift = args[4]
-    geo = args[5]
+    geo = args[4]
     
     # Number of pixels to be processed
     npix = data.shape[0]
@@ -804,13 +803,13 @@ def _resolve(args):
     laue = np.zeros((npix, len(grid)), dtype='float32')
     for m in range(npix):
         # Calculate the signal footprint along the beam
-        fp = _footprint(data[m], ind[m], pos[m], sig[m], shift, geo)
+        fp = _footprint(data[m], ind[m], pos[m], sig[m], geo)
         laue[m] += fp
         depth += fp
     return depth, laue
 
 
-def _footprint(dat, ind, pos, sig, shift, geo):
+def _footprint(dat, ind, pos, sig, geo):
     # Detector pixel position
     p0 = pix2pos(ind, geo) # [<->, dis2det, v^]
 
@@ -868,8 +867,8 @@ def _footprint(dat, ind, pos, sig, shift, geo):
     p2 = np.array([0.5 * masksize - pos, 0, -100], dtype='float32')
     p1 = np.dot(rotmat, p1) + mc
     p2 = np.dot(rotmat, p2) + mc
-    p1 = p1 + direction * shift
-    p2 = p2 + direction * shift
+    p1 = p1 + direction * geo['mask']['shift']
+    p2 = p2 + direction * geo['mask']['shift']
 
     # Intersection of the source and the plane 
     intersectionsource1 = intersect2(s1, s2, p0, p1, p2)
