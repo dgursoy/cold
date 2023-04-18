@@ -435,7 +435,7 @@ def _decode_batch(args):
 
     return pos, sig, ene
 
-def update_sig_batch(sig_stack, pos, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
+def update_sig_batch(sig_stack, pos_stack, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
     """
     Unpack the batch and perform sigrecon.
 
@@ -443,13 +443,13 @@ def update_sig_batch(sig_stack, pos, ene, calc_stacks, geo, ind_stack, scale_sta
     """
     if not is_cpu:
         calc_stacks['cost'] = np.nan_to_num(np.squeeze(calc_stacks['cost'], 1)[:, 0], copy=False)
-        pos[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
+        pos_stack[calc_stacks['start']:calc_stacks['start'] + len(calc_stacks['cost'])] = calc_stacks['cost']
 
     for i in range(len(calc_stacks['cost'])):
         if is_cpu:
             cs = calc_stacks['costsize'][i]
             try:
-                pos[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
+                pos_stack[calc_stacks['start'] + i] = np.where(calc_stacks['cost'][i][:cs].min() == calc_stacks['cost'][i][:cs])[0][0]
             except IndexError:
                 pass
 
@@ -457,7 +457,7 @@ def update_sig_batch(sig_stack, pos, ene, calc_stacks, geo, ind_stack, scale_sta
 
         data = calc_stacks['data'][i][:int(calc_stacks['data_sizes'][i])]
         msk = calc_stacks['mask'][i]
-        pos = int(pos[full_idx])
+        pos = int(pos_stack[full_idx])
         sig = sig_stack[full_idx]
         algo = calc_stacks['algo']
         ind = ind_stack[full_idx]
