@@ -77,7 +77,7 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
         out_mask /= np.max(out_mask)
 
     if inverted:
-        mask = core.invert(out_mask)
+        out_mask = core.invert(out_mask)
     
     return out_mask
 
@@ -90,7 +90,6 @@ def compute_ind_offset(mask, full_offset):
     kernel = signal.tukey(full_offset, alpha=0)
     kernel /= kernel.sum()
     mask_out = signal.convolve(mask.mask_base, kernel, 'same')
-    mask_out = core.invert(mask_out)
     return mask_out
 
 def wavelength(energy):
@@ -172,7 +171,6 @@ def build_mask(geo):
         mask[begin] = begin - pt1[m, 0] / geo['mask']['resolution']
         mask[end+1] = pt1[m, 1] / geo['mask']['resolution'] - end
     factor = 10
-    mask_0 = core.invert(np.copy(mask))
     mask = ndimage.zoom(mask, factor, order=1)
 
     # Final preprocessing assuming no offset
