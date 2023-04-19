@@ -435,7 +435,7 @@ def _decode_batch(args):
 
     return pos, sig, ene
 
-def update_sig_batch(sig_stack, pos_stack, ene, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
+def update_sig_batch(sig_stack, pos_stack, ene_stack, calc_stacks, geo, ind_stack, scale_stack, is_cpu):
     """
     Unpack the batch and perform sigrecon.
 
@@ -465,8 +465,8 @@ def update_sig_batch(sig_stack, pos_stack, ene, calc_stacks, geo, ind_stack, sca
 
 
         if algo['ene']['recon'] is True:
-            ene = enerecon(data, pos, sig, scale, algo, geo, ind)
-            msk = cmask.discmask(geo, ind, exact=True, energy=ene)
+            ene_stack[full_idx] = enerecon(data, pos, sig, scale, algo, geo, ind)
+            msk = cmask.discmask(geo, ind, exact=True, energy=ene_stack[full_idx])
     
         if algo['sig']['recon'] is True:
             sig_stack[calc_stacks['start'] + i] = sigrecon(data, msk, pos, 
