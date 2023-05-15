@@ -24,7 +24,7 @@ def wavelength(energy):
     return 2 * np.pi * PLANCK_CONSTANT * SPEED_OF_LIGHT / energy
 
 
-def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
+def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10, return_pathlen=False):
     # Mask create
     seq = np.load(geo['mask']['path'])
     if geo['mask']['reversed'] is True:
@@ -109,7 +109,9 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     if exact == True:
         angpix = np.arctan(p0[0] / p0[1]) 
         angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
-        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
+        # Pathlength
+        pathlen = geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
+        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * pathlen
         mask = np.exp(-mu * mask)
         mask = core.invert(mask)
 
@@ -121,7 +123,11 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
 
     if inverted == True:
         mask = core.invert(mask)
-    return mask
+
+    if return_pathlen:
+        return mask, pathlen
+    else:
+        return mask
 
 
 
