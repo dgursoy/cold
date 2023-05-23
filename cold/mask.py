@@ -14,6 +14,8 @@ __docformat__ = 'restructuredtext en'
 
 from cold import core
 
+ENE_CACHE = {}
+
 
 PLANCK_CONSTANT = 6.58211928e-19  # [keV*s]
 SPEED_OF_LIGHT = 299792458e+2  # [cm/s]
@@ -111,7 +113,13 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10, r
         angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
         # Pathlength
         pathlen = geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
-        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * pathlen
+
+        if energy not in ENE_CACHE:
+            ENE_CACHE[energy] = xraydb.mu_elam('Au', energy * 1e3) 
+        
+        xrdb_ene = ENE_CACHE[energy]
+
+        mu = xrdb_ene * 19.32 * pathlen
         mask = np.exp(-mu * mask)
         mask = core.invert(mask)
 

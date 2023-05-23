@@ -169,22 +169,26 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     logging.info('Initialized: Spline bases')
 
     # Partitioning
-    pos = partition(pos, comp['workers'])
-    sig = partition(sig, comp['workers'])
-    scl = partition(scl, comp['workers'])
-    data = partition(data, comp['workers'])
-    ind = partition(ind, comp['workers'])
-    ene = partition(ene, comp['workers'])
-    pathlen = partition(pathlen, comp['workers'])
-    datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
-    logging.info(
-        "Data partitioned: " +
-        "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
-            comp['workers'], 
-            data[0].shape, 
-            datasize,
-            datasize * comp['workers'] * 1e-3))
-    logging.info('Partitioning completed')
+    if comp['server'] != 'proc':
+        pos = partition(pos, comp['workers'])
+        sig = partition(sig, comp['workers'])
+        scl = partition(scl, comp['workers'])
+        data = partition(data, comp['workers'])
+        ind = partition(ind, comp['workers'])
+        ene = partition(ene, comp['workers'])
+        pathlen = partition(pathlen, comp['workers'])
+        datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
+        logging.info(
+            "Data partitioned: " +
+            "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
+                comp['workers'], 
+                data[0].shape, 
+                datasize,
+                datasize * comp['workers'] * 1e-3))
+        logging.info('Partitioning completed')
+
+    args = [data, pos, sig, scl, algo, base, geo, ind, ene, pathlen]
+
 
     if comp['server'] == 'local':
         # Pack arguments as list and run   
@@ -192,7 +196,6 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         base = [base] * comp['workers']
         geo = [geo] * comp['workers']
 
-        args = [data, pos, sig, scl, algo, base, geo, ind, ene, pathlen]
         results = runpar(_decode, args, comp['workers'])
 
         # Unpack results and rescale them
@@ -243,14 +246,18 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         for m, task in zip(range(comp['workers']), finished_tasks): 
             pos[m] = batch_task[task]['result'][0]
             sig[m] = batch_task[task]['result'][1]
-
-    data = pack(data)
-    pos = pack(pos)
-    sig = pack(sig) 
-    scl = pack(scl) 
-    ind = pack(ind) 
-    ene = pack(ene)
-    pathlen = pack(pathlen)
+    
+    elif comp['server'] == 'proc':
+        results = _decode(args)
+    
+    if comp['server'] != 'proc':
+        data = pack(data)
+        pos = pack(pos)
+        sig = pack(sig) 
+        scl = pack(scl) 
+        ind = pack(ind) 
+        ene = pack(ene)
+        pathlen = pack(pathlen)
 
     if debug == True:
         plotresults(data, ind, geo[0], pos, sig, scl, algo[0], ene)
