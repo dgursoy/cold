@@ -187,14 +187,15 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
                 datasize * comp['workers'] * 1e-3))
         logging.info('Partitioning completed')
 
-    args = [data, pos, sig, scl, algo, base, geo, ind, ene, pathlen]
-
-
-    if comp['server'] == 'local':
         # Pack arguments as list and run   
         algo = [algo] * comp['workers']
         base = [base] * comp['workers']
         geo = [geo] * comp['workers']
+
+    args = [data, pos, sig, scl, algo, base, geo, ind, ene, pathlen]
+
+
+    if comp['server'] == 'local':
 
         results = runpar(_decode, args, comp['workers'])
 
