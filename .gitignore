@@ -16,7 +16,6 @@ __pycache__/
 .vscode
 
 # Testing scripts
-test*
 trunk/
 tmp/
 cloud/
@@ -143,3 +142,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Tetsing data
+tests/data
