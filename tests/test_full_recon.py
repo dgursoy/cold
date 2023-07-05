@@ -50,6 +50,7 @@ class ColdTestbed(unittest.TestCase):
 
     @classmethod
     def _run_cold(cls, cold_cfg, dat, ind):
+        cold.reset_mask_cache(True, True)
 
         start_time = time.time()
         pos, sig, scl, ene, _ = cold.decode(dat, ind, cold_cfg.comp, cold_cfg.geo, cold_cfg.algo)
@@ -64,6 +65,7 @@ class ColdTestbed(unittest.TestCase):
             lau=np.asarray(lau)
         )
         print(f'Runtime: {time.time() - start_time}')
+        print(cold.mask.USE_MASK_CACHE)
         return test_results
 
 
