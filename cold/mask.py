@@ -5,6 +5,7 @@ from scipy import signal, ndimage
 import logging
 import warnings
 import xraydb
+from dataclasses import dataclass
 warnings.filterwarnings('ignore')
 
 
@@ -14,9 +15,28 @@ __docformat__ = 'restructuredtext en'
 
 from cold import core
 
+ENE_CACHE = {}
+MASK_CACHE = {}
+USE_MASK_CACHE = False
+
 
 PLANCK_CONSTANT = 6.58211928e-19  # [keV*s]
 SPEED_OF_LIGHT = 299792458e+2  # [cm/s]
+
+@dataclass
+class Mask:
+    mask: np.ndarray
+    mx: np.ndarray
+    my: np.ndarray
+    mz: np.ndarray
+    offset_cache: dict
+
+
+def reset_mask_cache(use_cache=False, reset_cache=False):
+    global MASK_CACHE, USE_MASK_CACHE
+    USE_MASK_CACHE = use_cache
+    if reset_cache:
+        MASK_CACHE = {}
 
 
 def wavelength(energy):
@@ -24,7 +44,67 @@ def wavelength(energy):
     return 2 * np.pi * PLANCK_CONSTANT * SPEED_OF_LIGHT / energy
 
 
-def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
+def mask_offset(base_mask, offset, factor, geo):
+    kernel = signal.tukey(int(factor * offset / geo['mask']['resolution']), alpha=0)
+    kernel /= kernel.sum()
+    mask = signal.convolve(base_mask.mask, kernel, 'same')
+    
+    return mask
+
+
+def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10, return_pathlen=False):
+    global MASK_CACHE
+    factor = 10
+
+    if geo['mask']['path'] not in MASK_CACHE or not USE_MASK_CACHE:
+        MASK_CACHE[geo['mask']['path']] = create_discmask(geo, factor)
+    base_mask = MASK_CACHE[geo['mask']['path']]
+
+    # Offset calculation
+    p0 = core.pix2pos(ind, geo) # [<->, dis2det, v^]
+    px = np.dot(p0, base_mask.mx) 
+    py = np.dot(p0, base_mask.my) 
+    pz = np.dot(p0, base_mask.mz) 
+    offset = np.abs(geo['mask']['thickness'] * px / py) 
+
+    offset_factor = int(factor * offset / geo['mask']['resolution']) 
+    if offset_factor > 0:
+        if offset_factor not in base_mask.offset_cache or not USE_MASK_CACHE:
+            base_mask.offset_cache[offset_factor] = mask_offset(base_mask, offset, factor, geo)
+        mask = base_mask.offset_cache[offset_factor]
+    else:
+        mask = base_mask.mask
+
+    if exact == True:
+        angpix = np.arctan(p0[0] / p0[1]) 
+        angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
+        # Pathlength
+        pathlen = geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
+
+        if energy not in ENE_CACHE:
+            ENE_CACHE[energy] = xraydb.mu_elam('Au', energy * 1e3) 
+        
+        xrdb_ene = ENE_CACHE[energy]
+
+        mu = xrdb_ene * 19.32 * pathlen
+        mask = np.exp(-mu * mask)
+        mask = core.invert(mask)
+
+    mask = ndimage.zoom(mask, 1 / factor, order=1)
+
+    if normalized == True:
+        mask -= np.min(mask)
+        mask /= np.max(mask)
+
+    if inverted == True:
+        mask = core.invert(mask)
+
+    if return_pathlen:
+        return mask, pathlen
+    else:
+        return mask
+    
+def create_discmask(geo, factor):
     # Mask create
     seq = np.load(geo['mask']['path'])
     if geo['mask']['reversed'] is True:
@@ -75,14 +155,6 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
     my = np.dot(rotmat, my)
     mz = np.dot(rotmat, mz)
 
-    # Offset calculation
-    p0 = core.pix2pos(ind, geo) # [<->, dis2det, v^]
-    px = np.dot(p0, mx) 
-    py = np.dot(p0, my) 
-    pz = np.dot(p0, mz) 
-    offset = np.abs(geo['mask']['thickness'] * px / py) 
-
-
     # Discretisize mask
     grid = creategrid(geo['mask'])
     mask = np.zeros(grid.size - 1)
@@ -99,40 +171,10 @@ def discmask(geo, ind, inverted=True, exact=False, normalized=True, energy=10):
         mask[begin+1:end+1] = 1
         mask[begin] = begin - pt1[m, 0] / geo['mask']['resolution']
         mask[end+1] = pt1[m, 1] / geo['mask']['resolution'] - end
-    factor = 10
+    
     mask = ndimage.zoom(mask, factor, order=1)
-    if int(factor * offset / geo['mask']['resolution']) > 0:
-        kernel = signal.tukey(int(factor * offset / geo['mask']['resolution']), alpha=0)
-        kernel /= kernel.sum()
-        mask = signal.convolve(mask, kernel, 'same')
 
-    if exact == True:
-        angpix = np.arctan(p0[0] / p0[1]) 
-        angmsk = geo['mask']['focus']['anglez'] * np.pi / 180.
-        mu = xraydb.mu_elam('Au', energy * 1e3) * 19.32 * geo['mask']['thickness'] * 1e-4 / np.cos(angpix + angmsk)
-        mask = np.exp(-mu * mask)
-        mask = core.invert(mask)
-
-    mask = ndimage.zoom(mask, 1 / factor, order=1)
-
-    if normalized == True:
-        mask -= np.min(mask)
-        mask /= np.max(mask)
-
-    if inverted == True:
-        mask = core.invert(mask)
-    return mask
-
-
-
-def mask(mask, inverted=True):
-    """Returns a mask."""
-    grid = creategrid(mask)
-    vals = gridvals(mask, grid)
-    vals, grid = padmask(mask, vals, mask['pad'] / mask['resolution'])
-    if inverted == True:
-        vals = core.invert(vals)
-    return vals
+    return Mask(mask, mx, my, mz, {})
 
 
 def padmask(mask, vals, pad):

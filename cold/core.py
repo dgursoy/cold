@@ -33,6 +33,9 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     ene = np.zeros((data.shape[0], ), dtype='float32')
     logging.info('Initialized: Energy')
 
+    pathlen = np.zeros((data.shape[0], ), dtype='float32')
+    logging.info('Initialized: Pathlen')
+    
     # Initialize new scl
     scl = np.ones((ind.shape[0], ), dtype='float32')
     factor = (geo['scanner']['step'] /
@@ -166,29 +169,34 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
     logging.info('Initialized: Spline bases')
 
     # Partitioning
-    pos = partition(pos, comp['workers'])
-    sig = partition(sig, comp['workers'])
-    scl = partition(scl, comp['workers'])
-    data = partition(data, comp['workers'])
-    ind = partition(ind, comp['workers'])
-    ene = partition(ene, comp['workers'])
-    datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
-    logging.info(
-        "Data partitioned: " +
-        "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
-            comp['workers'], 
-            data[0].shape, 
-            datasize,
-            datasize * comp['workers'] * 1e-3))
-    logging.info('Partitioning completed')
+    if comp['server'] != 'proc':
+        pos = partition(pos, comp['workers'])
+        sig = partition(sig, comp['workers'])
+        scl = partition(scl, comp['workers'])
+        data = partition(data, comp['workers'])
+        ind = partition(ind, comp['workers'])
+        ene = partition(ene, comp['workers'])
+        pathlen = partition(pathlen, comp['workers'])
+        datasize = data[0].shape[0] * data[0].shape[1] * 4e-6 # [MB]
+        logging.info(
+            "Data partitioned: " +
+            "{} blocks of {}, {:.2f} MB each, {:.2f} GB total".format(
+                comp['workers'], 
+                data[0].shape, 
+                datasize,
+                datasize * comp['workers'] * 1e-3))
+        logging.info('Partitioning completed')
 
-    if comp['server'] == 'local':
         # Pack arguments as list and run   
         algo = [algo] * comp['workers']
         base = [base] * comp['workers']
         geo = [geo] * comp['workers']
 
-        args = [data, pos, sig, scl, algo, base, geo, ind, ene]
+    args = [data, pos, sig, scl, algo, base, geo, ind, ene, pathlen]
+
+
+    if comp['server'] == 'local':
+
         results = runpar(_decode, args, comp['workers'])
 
         # Unpack results and rescale them
@@ -196,6 +204,7 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
             pos[m] = results[m][0]
             sig[m] = results[m][1]
             ene[m] = results[m][2]
+            pathlen[m] = results[m][3]
         
     elif comp['server'] == 'remote':
         from funcx.sdk.client import FuncXClient
@@ -238,18 +247,23 @@ def decode(data, ind, comp, geo, algo, pos=None, debug=False):
         for m, task in zip(range(comp['workers']), finished_tasks): 
             pos[m] = batch_task[task]['result'][0]
             sig[m] = batch_task[task]['result'][1]
-
-    data = pack(data)
-    pos = pack(pos)
-    sig = pack(sig) 
-    scl = pack(scl) 
-    ind = pack(ind) 
-    ene = pack(ene)
+    
+    elif comp['server'] == 'proc':
+        results = _decode(args)
+    
+    if comp['server'] != 'proc':
+        data = pack(data)
+        pos = pack(pos)
+        sig = pack(sig) 
+        scl = pack(scl) 
+        ind = pack(ind) 
+        ene = pack(ene)
+        pathlen = pack(pathlen)
 
     if debug == True:
         plotresults(data, ind, geo[0], pos, sig, scl, algo[0], ene)
 
-    return pos, sig, scl, ene
+    return pos, sig, scl, ene, pathlen
 
 
 def _decode(args):
@@ -262,18 +276,19 @@ def _decode(args):
     geo = args[6]
     ind = args[7]
     ene = args[8]
+    pathlen = args[9]
 
     from cold import pixdecode
     import logging
     for m in range(data.shape[0]):
-        pos[m], sig[m], ene[m] = pixdecode(
+        pos[m], sig[m], ene[m], pathlen[m] = pixdecode(
             data[m], pos[m], sig[m], scl[m], algo, base, geo, ind[m], ene[m], m)
         logging.info('Pixel decoded: ' +
             str(m) + '/' + str(data.shape[0] - 1) + 
             ' pos=' + str(pos[m].squeeze()) + 
             ' ene=' + str(ene[m].squeeze()) + 
             ' scales=' + str(scl[m].squeeze()))
-    return pos, sig, ene
+    return pos, sig, ene, pathlen
 
 
 def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ene, ix):
@@ -284,13 +299,13 @@ def pixdecode(data, pos, sig, scale, algo, bases, geo, ind, ene, ix):
     pos = posrecon(data, msk, pos, sig, algo)
 
     if algo['ene']['recon'] is True:
-        ene = enerecon(data, pos, sig, scale, algo, geo, ind)
+        ene, pathlen = enerecon(data, pos, sig, scale, algo, geo, ind)
         msk = cmask.discmask(geo, ind, exact=True, energy=ene)
 
     if algo['sig']['recon'] is True:
         sig = sigrecon(data, msk, pos, sig, algo, bases, ix)
 
-    return pos, sig, ene
+    return pos, sig, ene, pathlen
 
 
 def enerecon(data, pos, sig, scl, algo, geo, ind):
@@ -299,8 +314,10 @@ def enerecon(data, pos, sig, scl, algo, geo, ind):
     enerange = np.arange(*ex)
     costsize = len(enerange)
     cost = np.zeros((costsize), dtype='float32')
+    pathlens = []
     for m in range(costsize):
-        msk = cmask.discmask(geo, ind, exact=True, energy=enerange[m])
+        msk, pathlen = cmask.discmask(geo, ind, exact=True, energy=enerange[m], return_pathlen=True)
+        pathlens.append(pathlen)
         sim = signal.convolve(msk, sig, 'same')
         _sim = ndimage.shift(sim, -pos, order=1)[0:_data.size]
         if algo['ene']['method'] == 'lsqr':
@@ -310,7 +327,7 @@ def enerecon(data, pos, sig, scl, algo, geo, ind):
     except IndexError:
         ii = 0
         pass
-    return enerange[ii]
+    return enerange[ii], pathlens[ii]
 
 
 def posrecon(data, msk, pos, sig, algo):
